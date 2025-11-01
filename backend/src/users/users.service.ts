@@ -102,8 +102,8 @@ export class UsersService implements OnModuleInit {
     const payload: UpdateUserDto & { password?: string | null } = { ...data };
 
     if ('orgId' in payload) {
-      const org = await this.ensureOrg(payload.orgId ?? null);
-      payload.orgId = org?.id ?? null;
+      const org = await this.ensureOrg(payload.orgId);
+      payload.orgId = org?.id ?? undefined;
     }
 
     if (payload.password) {

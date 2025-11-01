@@ -74,7 +74,7 @@ export class AssignmentsService {
   private async createNotification(
     userId: string,
     type: NotificationType,
-    payload: Record<string, unknown>,
+    payload: Prisma.JsonObject,
   ) {
     await this.prisma.notification.create({
       data: {
@@ -112,19 +112,21 @@ export class AssignmentsService {
       },
     });
 
+    const payload: Prisma.JsonObject = {
+      assignmentId: assignment.id,
+      userId: assignment.userId,
+      workplaceId: assignment.workplaceId,
+      workplaceCode: assignment.workplace.code,
+      workplaceName: assignment.workplace.name,
+      startsAt: assignment.startsAt.toISOString(),
+      endsAt: assignment.endsAt ? assignment.endsAt.toISOString() : null,
+      status: assignment.status,
+    };
+
     await this.createNotification(
       assignment.userId,
       NotificationType.ASSIGNMENT_CREATED,
-      {
-        assignmentId: assignment.id,
-        userId: assignment.userId,
-        workplaceId: assignment.workplaceId,
-        workplaceCode: assignment.workplace.code,
-        workplaceName: assignment.workplace.name,
-        startsAt: assignment.startsAt,
-        endsAt: assignment.endsAt,
-        status: assignment.status,
-      },
+      payload,
     );
 
     return assignment;
@@ -215,19 +217,21 @@ export class AssignmentsService {
       },
     });
 
+    const payload: Prisma.JsonObject = {
+      assignmentId: updated.id,
+      userId: updated.userId,
+      workplaceId: updated.workplaceId,
+      workplaceCode: updated.workplace.code,
+      workplaceName: updated.workplace.name,
+      startsAt: updated.startsAt.toISOString(),
+      endsAt: updated.endsAt ? updated.endsAt.toISOString() : null,
+      status: updated.status,
+    };
+
     await this.createNotification(
       updated.userId,
       NotificationType.ASSIGNMENT_UPDATED,
-      {
-        assignmentId: updated.id,
-        userId: updated.userId,
-        workplaceId: updated.workplaceId,
-        workplaceCode: updated.workplace.code,
-        workplaceName: updated.workplace.name,
-        startsAt: updated.startsAt,
-        endsAt: updated.endsAt,
-        status: updated.status,
-      },
+      payload,
     );
 
     return updated;

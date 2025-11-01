@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { createAssignmentSchema } from './create-assignment.dto.js';
+import { assignmentBaseSchema } from './create-assignment.dto.js';
 
-export const updateAssignmentSchema = createAssignmentSchema
+export const updateAssignmentSchema = assignmentBaseSchema
   .partial()
   .superRefine((data, ctx) => {
     if (data.startsAt && data.endsAt && data.endsAt <= data.startsAt) {
