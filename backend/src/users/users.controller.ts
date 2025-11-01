@@ -1,4 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { UsersService } from './users.service.js';
 import { CreateUserDto, createUserSchema } from './dto/create-user.dto.js';
 import { UpdateUserDto, updateUserSchema } from './dto/update-user.dto.js';
@@ -15,7 +24,9 @@ export class UsersController {
 
   @Post()
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
-  create(@Body(new ZodValidationPipe(createUserSchema)) payload: CreateUserDto) {
+  create(
+    @Body(new ZodValidationPipe(createUserSchema)) payload: CreateUserDto,
+  ) {
     return this.usersService.create(payload);
   }
 

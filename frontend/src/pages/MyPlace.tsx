@@ -24,9 +24,7 @@ const MyPlace = () => {
   }
 
   if (!data) {
-    return (
-      <Result status="info" title={t('myPlace.noAssignment')} />
-    );
+    return <Result status="info" title={t('myPlace.noAssignment')} />;
   }
 
   return (

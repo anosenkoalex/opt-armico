@@ -1,7 +1,22 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { WorkplacesService } from './workplaces.service.js';
-import { CreateWorkplaceDto, createWorkplaceSchema } from './dto/create-workplace.dto.js';
-import { UpdateWorkplaceDto, updateWorkplaceSchema } from './dto/update-workplace.dto.js';
+import {
+  CreateWorkplaceDto,
+  createWorkplaceSchema,
+} from './dto/create-workplace.dto.js';
+import {
+  UpdateWorkplaceDto,
+  updateWorkplaceSchema,
+} from './dto/update-workplace.dto.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
@@ -16,7 +31,8 @@ export class WorkplacesController {
   @Post()
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.MANAGER)
   create(
-    @Body(new ZodValidationPipe(createWorkplaceSchema)) payload: CreateWorkplaceDto,
+    @Body(new ZodValidationPipe(createWorkplaceSchema))
+    payload: CreateWorkplaceDto,
   ) {
     return this.workplacesService.create(payload);
   }
@@ -28,7 +44,12 @@ export class WorkplacesController {
   }
 
   @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.MANAGER, UserRole.VIEWER)
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.MANAGER,
+    UserRole.VIEWER,
+  )
   findOne(@Param('id') id: string) {
     return this.workplacesService.findOne(id);
   }
@@ -37,7 +58,8 @@ export class WorkplacesController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.MANAGER)
   update(
     @Param('id') id: string,
-    @Body(new ZodValidationPipe(updateWorkplaceSchema)) payload: UpdateWorkplaceDto,
+    @Body(new ZodValidationPipe(updateWorkplaceSchema))
+    payload: UpdateWorkplaceDto,
   ) {
     return this.workplacesService.update(id, payload);
   }

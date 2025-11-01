@@ -21,9 +21,7 @@ const Dashboard = () => {
   }
 
   if (isError) {
-    return (
-      <Typography.Text type="danger">{t('common.error')}</Typography.Text>
-    );
+    return <Typography.Text type="danger">{t('common.error')}</Typography.Text>;
   }
 
   return (

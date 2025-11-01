@@ -11,9 +11,8 @@ export class MeController {
 
   @Get('current-workplace')
   async currentWorkplace(@CurrentUser() user: JwtPayload) {
-    const assignment = await this.assignmentsService.findCurrentWorkplaceForUser(
-      user.sub,
-    );
+    const assignment =
+      await this.assignmentsService.findCurrentWorkplaceForUser(user.sub);
 
     if (!assignment) {
       return null;

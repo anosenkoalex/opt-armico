@@ -45,7 +45,12 @@ const Workplaces = () => {
   return (
     <div>
       <Typography.Title level={3}>{t('workplaces.title')}</Typography.Title>
-      <Table rowKey="id" dataSource={data} columns={columns} pagination={false} />
+      <Table
+        rowKey="id"
+        dataSource={data}
+        columns={columns}
+        pagination={false}
+      />
     </div>
   );
 };

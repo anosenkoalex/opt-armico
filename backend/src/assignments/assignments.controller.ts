@@ -1,4 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { AssignmentsService } from './assignments.service.js';
 import {
   CreateAssignmentDto,
@@ -22,7 +31,8 @@ export class AssignmentsController {
   @Post()
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.MANAGER)
   create(
-    @Body(new ZodValidationPipe(createAssignmentSchema)) payload: CreateAssignmentDto,
+    @Body(new ZodValidationPipe(createAssignmentSchema))
+    payload: CreateAssignmentDto,
   ) {
     return this.assignmentsService.create(payload);
   }
@@ -48,7 +58,8 @@ export class AssignmentsController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.MANAGER)
   update(
     @Param('id') id: string,
-    @Body(new ZodValidationPipe(updateAssignmentSchema)) payload: UpdateAssignmentDto,
+    @Body(new ZodValidationPipe(updateAssignmentSchema))
+    payload: UpdateAssignmentDto,
   ) {
     return this.assignmentsService.update(id, payload);
   }

@@ -34,7 +34,12 @@ const AppLayout = () => {
 
   return (
     <Layout className="min-h-screen">
-      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="lg">
+      <Sider
+        collapsible
+        collapsed={collapsed}
+        onCollapse={setCollapsed}
+        breakpoint="lg"
+      >
         <div className="text-white text-lg font-semibold px-4 py-3">Armico</div>
         <Menu
           theme="dark"

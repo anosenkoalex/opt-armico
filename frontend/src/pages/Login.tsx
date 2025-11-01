@@ -28,7 +28,11 @@ const Login = () => {
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
       <Card title={t('login.title')} className="w-full max-w-md shadow-md">
-        <Form layout="vertical" onFinish={onFinish} initialValues={{ email: 'admin@armico.local' }}>
+        <Form
+          layout="vertical"
+          onFinish={onFinish}
+          initialValues={{ email: 'admin@armico.local' }}
+        >
           <Form.Item
             label={t('login.email')}
             name="email"
