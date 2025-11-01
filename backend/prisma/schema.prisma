@@ -1,0 +1,69 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Org {
+  id          String        @id @default(cuid())
+  name        String
+  timezone    String        @default("UTC")
+  users       User[]
+  workplaces  Workplace[]
+  assignments Assignment[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model User {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Org      @relation(fields: [orgId], references: [id])
+  email     String   @unique
+  password  String
+  role      UserRole @default(WORKER)
+  assignments Assignment[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ORG_ADMIN
+  MANAGER
+  WORKER
+  VIEWER
+}
+
+model Workplace {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Org          @relation(fields: [orgId], references: [id])
+  name        String
+  address     String
+  latitude    Float?
+  longitude   Float?
+  capacity    Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  assignments Assignment[]
+}
+
+model Assignment {
+  id           String     @id @default(cuid())
+  orgId        String
+  org          Org        @relation(fields: [orgId], references: [id])
+  userId       String
+  user         User       @relation(fields: [userId], references: [id])
+  workplaceId  String
+  workplace    Workplace  @relation(fields: [workplaceId], references: [id])
+  startsAt     DateTime
+  endsAt       DateTime
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([orgId, userId, startsAt, endsAt])
+}
