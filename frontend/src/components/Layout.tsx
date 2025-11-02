@@ -44,6 +44,11 @@ const AppLayout = () => {
           path: '/assignments',
           label: t('layout.assignments'),
         },
+        {
+          key: 'planner',
+          path: '/planner',
+          label: t('layout.planner'),
+        },
       );
     }
 

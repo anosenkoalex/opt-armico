@@ -18,6 +18,19 @@ enum AssignmentStatus {
   ARCHIVED
 }
 
+enum PlanStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SlotStatus {
+  PLANNED
+  CONFIRMED
+  REPLACED
+  CANCELLED
+}
+
 enum NotificationType {
   ASSIGNMENT_CREATED
   ASSIGNMENT_UPDATED
@@ -29,6 +42,8 @@ model Org {
   slug       String       @unique
   users      User[]
   workplaces Workplace[]
+  slots      Slot[]
+  constraints Constraint[]
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
 }
@@ -44,6 +59,8 @@ model User {
   role           UserRole       @default(USER)
   assignments    Assignment[]
   notifications  Notification[]
+  slots          Slot[]
+  constraints    Constraint[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 }
@@ -61,6 +78,50 @@ model Workplace {
   updatedAt   DateTime     @updatedAt
 
   @@unique([orgId, code])
+}
+
+model Plan {
+  id        String     @id @default(cuid())
+  name      String
+  startsAt  DateTime
+  endsAt    DateTime
+  status    PlanStatus @default(DRAFT)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  slots     Slot[]
+}
+
+model Slot {
+  id        String     @id @default(cuid())
+  planId    String
+  plan      Plan       @relation(fields: [planId], references: [id])
+  orgId     String
+  org       Org        @relation(fields: [orgId], references: [id])
+  userId    String
+  user      User       @relation(fields: [userId], references: [id])
+  dateStart DateTime
+  dateEnd   DateTime
+  status    SlotStatus @default(PLANNED)
+  colorCode String?
+  note      String?
+  locked    Boolean    @default(false)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([planId])
+  @@index([dateStart, userId])
+  @@index([dateStart, orgId])
+}
+
+model Constraint {
+  id        String   @id @default(cuid())
+  type      String
+  payload   Json
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  orgId     String?
+  org       Org?     @relation(fields: [orgId], references: [id])
+  createdAt DateTime @default(now())
 }
 
 model Assignment {

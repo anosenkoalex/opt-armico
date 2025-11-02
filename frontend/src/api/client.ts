@@ -71,6 +71,38 @@ export type Notification = {
   readAt?: string | null;
 };
 
+export type PlanStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+
+export type SlotStatus = 'PLANNED' | 'CONFIRMED' | 'REPLACED' | 'CANCELLED';
+
+export type Plan = {
+  id: string;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  status: PlanStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Slot = {
+  id: string;
+  planId: string;
+  orgId: string;
+  userId: string;
+  dateStart: string;
+  dateEnd: string;
+  status: SlotStatus;
+  colorCode?: string | null;
+  note?: string | null;
+  locked: boolean;
+  createdAt: string;
+  updatedAt: string;
+  plan?: Pick<Plan, 'id' | 'name' | 'status'>;
+  org?: { id: string; name: string; slug: string };
+  user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'>;
+};
+
 export type User = {
   id: string;
   email: string;
@@ -94,6 +126,36 @@ export type CurrentWorkplaceResponse = {
   assignment: Assignment | null;
   history: Assignment[];
 };
+
+export type MatrixSlot = Slot & {
+  plan: { id: string; name: string };
+};
+
+export type MatrixRowByUsers = {
+  user: Pick<User, 'id' | 'email' | 'fullName' | 'position'>;
+  slots: MatrixSlot[];
+};
+
+export type MatrixRowByOrgs = {
+  org: { id: string; name: string; slug: string };
+  slots: (MatrixSlot & { user: Pick<User, 'id' | 'email' | 'fullName' | 'position'> })[];
+};
+
+export type MatrixResponse =
+  | {
+      mode: 'byUsers';
+      page: number;
+      pageSize: number;
+      total: number;
+      rows: MatrixRowByUsers[];
+    }
+  | {
+      mode: 'byOrgs';
+      page: number;
+      pageSize: number;
+      total: number;
+      rows: MatrixRowByOrgs[];
+    };
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:3000',
@@ -232,6 +294,32 @@ export const updateAssignment = async (
 
 export const fetchUsers = async () => {
   const { data } = await api.get<User[]>('/users');
+  return data;
+};
+
+export const fetchMatrix = async (params: {
+  mode?: 'byUsers' | 'byOrgs';
+  dateFrom: string;
+  dateTo: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const { data } = await api.get<MatrixResponse>('/matrix', { params });
+  return data;
+};
+
+export const fetchMySchedule = async () => {
+  const { data } = await api.get<Slot[]>('/me/schedule');
+  return data;
+};
+
+export const confirmMySlot = async (slotId: string) => {
+  const { data } = await api.patch<Slot>(`/me/slots/${slotId}/confirm`, {});
+  return data;
+};
+
+export const requestSlotSwap = async (slotId: string, payload: { comment: string }) => {
+  const { data } = await api.post<Slot>(`/me/slots/${slotId}/request-swap`, payload);
   return data;
 };
 
