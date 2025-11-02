@@ -67,7 +67,11 @@ export type Assignment = {
   workplace?: Pick<Workplace, 'id' | 'code' | 'name' | 'location'>;
 };
 
-export type NotificationType = 'ASSIGNMENT_CREATED' | 'ASSIGNMENT_UPDATED';
+export type NotificationType =
+  | 'ASSIGNMENT_CREATED'
+  | 'ASSIGNMENT_UPDATED'
+  | 'ASSIGNMENT_MOVED'
+  | 'ASSIGNMENT_CANCELLED';
 
 export type Notification = {
   id: string;
@@ -76,6 +80,14 @@ export type Notification = {
   payload: Record<string, unknown>;
   createdAt: string;
   readAt?: string | null;
+};
+
+export type AdminFeedItem = {
+  id: string;
+  type: NotificationType;
+  createdAt: string;
+  payload: Record<string, unknown>;
+  user: Pick<User, 'id' | 'email' | 'fullName' | 'position'>;
 };
 
 export type PlanStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
@@ -135,35 +147,33 @@ export type CurrentWorkplaceResponse = {
   history: Assignment[];
 };
 
-export type MatrixSlot = Slot & {
-  plan: { id: string; name: string };
+export type PlannerMatrixSlot = {
+  id: string;
+  from: string;
+  to: string | null;
+  code: string;
+  name: string;
+  status: AssignmentStatus;
+  user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'> | null;
+  org?: Pick<Org, 'id' | 'name' | 'slug'> | null;
 };
 
-export type MatrixRowByUsers = {
-  user: Pick<User, 'id' | 'email' | 'fullName' | 'position'>;
-  slots: MatrixSlot[];
+export type PlannerMatrixRow = {
+  key: string;
+  title: string;
+  subtitle?: string;
+  slots: PlannerMatrixSlot[];
 };
 
-export type MatrixRowByOrgs = {
-  org: { id: string; name: string; slug: string };
-  slots: (MatrixSlot & { user: Pick<User, 'id' | 'email' | 'fullName' | 'position'> })[];
+export type PlannerMatrixResponse = {
+  mode: 'byUsers' | 'byOrgs';
+  from: string;
+  to: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  rows: PlannerMatrixRow[];
 };
-
-export type MatrixResponse =
-  | {
-      mode: 'byUsers';
-      page: number;
-      pageSize: number;
-      total: number;
-      rows: MatrixRowByUsers[];
-    }
-  | {
-      mode: 'byOrgs';
-      page: number;
-      pageSize: number;
-      total: number;
-      rows: MatrixRowByOrgs[];
-    };
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:3000',
@@ -213,9 +223,16 @@ export const fetchCurrentWorkplace = async () => {
   return data;
 };
 
-export const fetchNotifications = async (limit = 10) => {
+export const fetchNotifications = async (take = 10) => {
   const { data } = await api.get<Notification[]>(`/notifications/me`, {
-    params: { limit },
+    params: { take },
+  });
+  return data;
+};
+
+export const fetchAdminFeed = async (take = 20) => {
+  const { data } = await api.get<AdminFeedItem[]>(`/feed/admin`, {
+    params: { take },
   });
   return data;
 };
@@ -322,14 +339,19 @@ export const createUser = async (payload: {
   return data;
 };
 
-export const fetchMatrix = async (params: {
+export const fetchPlannerMatrix = async (params: {
   mode?: 'byUsers' | 'byOrgs';
-  dateFrom: string;
-  dateTo: string;
+  from: string;
+  to: string;
   page?: number;
   pageSize?: number;
+  userId?: string;
+  orgId?: string;
+  status?: AssignmentStatus;
 }) => {
-  const { data } = await api.get<MatrixResponse>('/matrix', { params });
+  const { data } = await api.get<PlannerMatrixResponse>('/planner/matrix', {
+    params,
+  });
   return data;
 };
 

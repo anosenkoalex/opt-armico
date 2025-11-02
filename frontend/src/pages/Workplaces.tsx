@@ -123,12 +123,6 @@ const WorkplacesPage = () => {
         key: 'name',
       },
       {
-        title: t('workplaces.location'),
-        dataIndex: 'location',
-        key: 'location',
-        render: (value: string | null) => value ?? '—',
-      },
-      {
         title: t('workplaces.status'),
         dataIndex: 'isActive',
         key: 'isActive',
@@ -149,7 +143,6 @@ const WorkplacesPage = () => {
               form.setFieldsValue({
                 code: record.code,
                 name: record.name,
-                location: record.location ?? undefined,
                 isActive: record.isActive,
               });
               setIsModalOpen(true);
@@ -293,9 +286,6 @@ const WorkplacesPage = () => {
             name="name"
             rules={[{ required: true, message: t('common.required') }]}
           >
-            <Input />
-          </Form.Item>
-          <Form.Item label={t('workplaces.location')} name="location">
             <Input />
           </Form.Item>
           <Form.Item

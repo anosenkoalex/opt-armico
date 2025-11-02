@@ -36,6 +36,8 @@ enum SlotStatus {
 enum NotificationType {
   ASSIGNMENT_CREATED
   ASSIGNMENT_UPDATED
+  ASSIGNMENT_MOVED
+  ASSIGNMENT_CANCELLED
 }
 
 model Org {

@@ -105,7 +105,11 @@ const AppLayout = () => {
           const key =
             item.type === 'ASSIGNMENT_CREATED'
               ? 'notifications.created'
-              : 'notifications.updated';
+              : item.type === 'ASSIGNMENT_MOVED'
+                ? 'notifications.moved'
+                : item.type === 'ASSIGNMENT_CANCELLED'
+                  ? 'notifications.cancelled'
+                  : 'notifications.updated';
 
           return (
             <div key={item.id} className="py-2 border-b last:border-none">

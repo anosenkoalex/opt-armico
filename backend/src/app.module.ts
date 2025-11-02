@@ -9,6 +9,8 @@ import { WorkplacesModule } from './workplaces/workplaces.module.js';
 import { AssignmentsModule } from './assignments/assignments.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { PlansModule } from './plans/plans.module.js';
+import { PlannerModule } from './planner/planner.module.js';
+import { FeedModule } from './feed/feed.module.js';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { PlansModule } from './plans/plans.module.js';
     AssignmentsModule,
     NotificationsModule,
     PlansModule,
+    PlannerModule,
+    FeedModule,
   ],
 })
 export class AppModule {}

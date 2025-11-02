@@ -12,9 +12,11 @@ export class NotificationsController {
   @Get('me')
   findMyNotifications(
     @CurrentUser() user: JwtPayload,
-    @Query('limit') limit?: string,
+    @Query('take') take?: string,
+    @Query('limit') legacyLimit?: string,
   ) {
-    const parsedLimit = Number(limit);
+    const raw = take ?? legacyLimit ?? '';
+    const parsedLimit = Number(raw);
     const take = Number.isNaN(parsedLimit)
       ? 20
       : Math.min(Math.max(parsedLimit, 1), 50);

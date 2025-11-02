@@ -3,7 +3,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AssignmentStatus, NotificationType, Prisma } from '@prisma/client';
+import {
+  AssignmentStatus,
+  NotificationType,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CreateAssignmentDto } from './dto/create-assignment.dto.js';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto.js';
@@ -71,6 +75,27 @@ export class AssignmentsService {
     }
   }
 
+  private buildNotificationPayload(
+    assignment: Prisma.AssignmentGetPayload<{
+      include: {
+        workplace: {
+          select: { id: true; code: true; name: true; location: true };
+        };
+      };
+    }>,
+  ): Prisma.JsonObject {
+    return {
+      assignmentId: assignment.id,
+      userId: assignment.userId,
+      workplaceId: assignment.workplaceId,
+      workplaceCode: assignment.workplace.code,
+      workplaceName: assignment.workplace.name,
+      startsAt: assignment.startsAt.toISOString(),
+      endsAt: assignment.endsAt ? assignment.endsAt.toISOString() : null,
+      status: assignment.status,
+    } satisfies Prisma.JsonObject;
+  }
+
   private async createNotification(
     userId: string,
     type: NotificationType,
@@ -112,21 +137,10 @@ export class AssignmentsService {
       },
     });
 
-    const payload: Prisma.JsonObject = {
-      assignmentId: assignment.id,
-      userId: assignment.userId,
-      workplaceId: assignment.workplaceId,
-      workplaceCode: assignment.workplace.code,
-      workplaceName: assignment.workplace.name,
-      startsAt: assignment.startsAt.toISOString(),
-      endsAt: assignment.endsAt ? assignment.endsAt.toISOString() : null,
-      status: assignment.status,
-    };
-
     await this.createNotification(
       assignment.userId,
       NotificationType.ASSIGNMENT_CREATED,
-      payload,
+      this.buildNotificationPayload(assignment),
     );
 
     return assignment;
@@ -180,6 +194,11 @@ export class AssignmentsService {
   async update(id: string, data: UpdateAssignmentDto) {
     const existing = await this.prisma.assignment.findUnique({
       where: { id },
+      include: {
+        workplace: {
+          select: { id: true, code: true, name: true, location: true },
+        },
+      },
     });
 
     if (!existing) {
@@ -217,22 +236,43 @@ export class AssignmentsService {
       },
     });
 
-    const payload: Prisma.JsonObject = {
-      assignmentId: updated.id,
-      userId: updated.userId,
-      workplaceId: updated.workplaceId,
-      workplaceCode: updated.workplace.code,
-      workplaceName: updated.workplace.name,
-      startsAt: updated.startsAt.toISOString(),
-      endsAt: updated.endsAt ? updated.endsAt.toISOString() : null,
-      status: updated.status,
-    };
+    const payload = this.buildNotificationPayload(updated);
 
-    await this.createNotification(
-      updated.userId,
-      NotificationType.ASSIGNMENT_UPDATED,
-      payload,
-    );
+    if (data.userId && data.userId !== existing.userId) {
+      const cancelledPayload = this.buildNotificationPayload(existing);
+      cancelledPayload.status = AssignmentStatus.ARCHIVED;
+
+      await this.createNotification(
+        existing.userId,
+        NotificationType.ASSIGNMENT_CANCELLED,
+        cancelledPayload,
+      );
+
+      await this.createNotification(
+        updated.userId,
+        NotificationType.ASSIGNMENT_CREATED,
+        payload,
+      );
+    } else {
+      let type = NotificationType.ASSIGNMENT_UPDATED;
+
+      if (existing.status !== updated.status) {
+        if (updated.status === AssignmentStatus.ARCHIVED) {
+          type = NotificationType.ASSIGNMENT_CANCELLED;
+        }
+      }
+
+      const datesChanged =
+        existing.startsAt.getTime() !== updated.startsAt.getTime() ||
+        (existing.endsAt?.getTime() ?? null) !==
+          (updated.endsAt?.getTime() ?? null);
+
+      if (type !== NotificationType.ASSIGNMENT_CANCELLED && datesChanged) {
+        type = NotificationType.ASSIGNMENT_MOVED;
+      }
+
+      await this.createNotification(updated.userId, type, payload);
+    }
 
     return updated;
   }

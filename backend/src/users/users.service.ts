@@ -71,7 +71,7 @@ export class UsersService implements OnModuleInit {
     });
 
     if (existing) {
-      throw new ConflictException('Пользователь с таким email уже существует');
+      throw new ConflictException('Пользователь с таким e-mail уже существует');
     }
 
     const org = await this.ensureOrg(data.orgId ?? null);

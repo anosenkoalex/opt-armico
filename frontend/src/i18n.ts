@@ -29,6 +29,11 @@ void i18n.use(initReactI18next).init({
           noCurrentAssignment: 'You do not have an active assignment.',
           assignmentPeriod: 'From {{start}} to {{end}}',
           openEnded: 'Open ended',
+          adminFeedTitle: 'Latest changes',
+          noFeed: 'No recent changes.',
+          notificationsTitle: 'My notifications',
+          upcomingAssignment: 'Upcoming assignment',
+          noUpcomingAssignment: 'No upcoming assignments yet.',
         },
         workplaces: {
           title: 'Workplaces',
@@ -109,7 +114,9 @@ void i18n.use(initReactI18next).init({
             slots: 'Slots',
           },
           noSlots: 'No slots in this period',
+          noData: 'No assignments in this period',
           legendTitle: 'Legend',
+          openEnded: 'Open ended',
         },
         myPlace: {
           title: 'My schedule',
@@ -148,6 +155,8 @@ void i18n.use(initReactI18next).init({
           empty: 'No notifications yet.',
           created: 'Assignment created for {{workplace}}',
           updated: 'Assignment updated for {{workplace}}',
+          moved: 'Assignment moved for {{workplace}}',
+          cancelled: 'Assignment cancelled for {{workplace}}',
         },
         admin: {
           accessDenied: 'Access denied',
@@ -191,6 +200,11 @@ void i18n.use(initReactI18next).init({
           noCurrentAssignment: 'Сейчас у вас нет активного назначения.',
           assignmentPeriod: 'С {{start}} по {{end}}',
           openEnded: 'Бессрочно',
+          adminFeedTitle: 'Последние изменения',
+          noFeed: 'Изменений пока нет.',
+          notificationsTitle: 'Мои уведомления',
+          upcomingAssignment: 'Ближайшее назначение',
+          noUpcomingAssignment: 'Ближайших назначений нет.',
         },
         workplaces: {
           title: 'Рабочие места',
@@ -271,7 +285,9 @@ void i18n.use(initReactI18next).init({
             slots: 'Слоты',
           },
           noSlots: 'Нет слотов в выбранный период',
+          noData: 'Нет назначений за выбранный период',
           legendTitle: 'Легенда',
+          openEnded: 'Бессрочно',
         },
         myPlace: {
           title: 'Моё расписание',
@@ -310,6 +326,8 @@ void i18n.use(initReactI18next).init({
           empty: 'Уведомлений пока нет.',
           created: 'Создано назначение для {{workplace}}',
           updated: 'Обновлено назначение для {{workplace}}',
+          moved: 'Назначение перенесено для {{workplace}}',
+          cancelled: 'Назначение отменено для {{workplace}}',
         },
         admin: {
           accessDenied: 'Доступ запрещён',

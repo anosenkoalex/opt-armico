@@ -1,31 +1,49 @@
 import {
   Card,
   DatePicker,
+  Empty,
   Flex,
+  Pagination,
   Result,
   Select,
   Spin,
-  Table,
-  Tag,
   Typography,
 } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import dayjs, { Dayjs } from 'dayjs';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import dayjs, { Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
-import { MatrixRowByOrgs, MatrixRowByUsers, MatrixSlot, fetchMatrix } from '../api/client.js';
+import {
+  PlannerMatrixResponse,
+  PlannerMatrixRow,
+  PlannerMatrixSlot,
+  fetchPlannerMatrix,
+} from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
 const { RangePicker } = DatePicker;
 
+const COLOR_PALETTE = [
+  '#1677ff',
+  '#13c2c2',
+  '#fa8c16',
+  '#eb2f96',
+  '#52c41a',
+  '#722ed1',
+  '#fa541c',
+  '#2f54eb',
+];
+
 type Mode = 'byUsers' | 'byOrgs';
 
-type PlannerRow = {
-  key: string;
-  title: string;
-  subtitle: string;
-  slots: MatrixSlot[];
+const clampIndex = (value: number, max: number) => {
+  if (value < 0) {
+    return 0;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
 };
 
 const PlannerPage = () => {
@@ -37,123 +55,157 @@ const PlannerPage = () => {
     dayjs().startOf('month'),
     dayjs().endOf('month'),
   ]);
-  const pageSize = 20;
+  const pageSize = 10;
 
-  const query = useQuery({
-    queryKey: ['matrix', mode, page, range[0]?.toISOString(), range[1]?.toISOString()],
-    queryFn: async () =>
-      fetchMatrix({
+  const role = user?.role ?? 'USER';
+  const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+  const isAuditor = role === 'AUDITOR';
+  const canView = isAdmin || isAuditor;
+
+  const query = useQuery<PlannerMatrixResponse>({
+    queryKey: [
+      'planner-matrix',
+      mode,
+      page,
+      range[0]?.toISOString(),
+      range[1]?.toISOString(),
+      role,
+    ],
+    queryFn: async () => {
+      const [fromRaw, toRaw] = range;
+
+      if (!fromRaw || !toRaw) {
+        throw new Error('Invalid range');
+      }
+
+      const params = {
         mode,
-        page,
-        pageSize,
-        dateFrom: range[0].startOf('day').toISOString(),
-        dateTo: range[1].endOf('day').toISOString(),
-      }),
+        from: fromRaw.startOf('day').toISOString(),
+        to: toRaw.endOf('day').toISOString(),
+        page: isAdmin ? page : 1,
+        pageSize: isAdmin ? pageSize : undefined,
+      } as const;
+
+      return fetchPlannerMatrix(params);
+    },
+    enabled: canView,
     keepPreviousData: true,
   });
 
-  if (user?.role !== 'ADMIN' && user?.role !== 'SUPER_ADMIN') {
-    return <Result status="403" title={t('admin.accessDenied')} />;
-  }
-
-  const dataSource = useMemo<PlannerRow[]>(() => {
+  const days = useMemo<Dayjs[]>(() => {
     if (!query.data) {
       return [];
     }
 
-    if (query.data.mode === 'byUsers') {
-      return query.data.rows.map((row: MatrixRowByUsers) => ({
-        key: row.user.id,
-        title: row.user.fullName ?? row.user.email,
-        subtitle: row.user.position ?? '',
-        slots: row.slots,
-      }));
+    const start = dayjs(query.data.from).startOf('day');
+    const end = dayjs(query.data.to).startOf('day');
+
+    const result: Dayjs[] = [];
+    let current = start;
+
+    while (current.isSame(end) || current.isBefore(end)) {
+      result.push(current);
+      current = current.add(1, 'day');
     }
 
-    return query.data.rows.map((row: MatrixRowByOrgs) => ({
-      key: row.org.id,
-      title: `${row.org.slug.toUpperCase()} — ${row.org.name}`,
-      subtitle: '',
-      slots: row.slots,
-    }));
+    return result;
   }, [query.data]);
 
-  const columns = useMemo<ColumnsType<PlannerRow>>(
-    () => [
-      {
-        title: mode === 'byUsers' ? t('planner.columns.employee') : t('planner.columns.org'),
-        dataIndex: 'title',
-        key: 'title',
-        render: (_value, record) => (
-          <Flex vertical gap={4}>
-            <Typography.Text strong>{record.title}</Typography.Text>
-            {record.subtitle ? (
-              <Typography.Text type="secondary">{record.subtitle}</Typography.Text>
-            ) : null}
-          </Flex>
-        ),
-        width: '20%',
-      },
-      {
-        title: t('planner.columns.slots'),
-        dataIndex: 'slots',
-        key: 'slots',
-        render: (_value, record) => (
-          <Flex gap={8} wrap>
-            {record.slots.map((slot) => {
-              const label = slot.org?.slug
-                ? slot.org.slug.toUpperCase()
-                : slot.plan?.name ?? '';
-              const secondary =
-                mode === 'byUsers'
-                  ? slot.plan?.name ?? slot.org?.name ?? ''
-                  : slot.user?.fullName ?? slot.user?.email ?? '';
+  const colorMap = useMemo(() => {
+    if (!query.data) {
+      return new Map<string, string>();
+    }
 
-              return (
-                <Tag key={slot.id} color="blue">
-                  <Flex vertical>
-                    <Typography.Text strong>{label}</Typography.Text>
-                    <Typography.Text type="secondary">
-                      {dayjs(slot.dateStart).format('DD.MM')} — {dayjs(slot.dateEnd).format('DD.MM')}
-                    </Typography.Text>
-                    {secondary ? (
-                      <Typography.Text type="secondary">{secondary}</Typography.Text>
-                    ) : null}
-                  </Flex>
-                </Tag>
-              );
-            })}
-            {record.slots.length === 0 && (
-              <Typography.Text type="secondary">
-                {t('planner.noSlots')}
-              </Typography.Text>
-            )}
-          </Flex>
-        ),
-      },
-    ],
-    [mode, t],
+    const map = new Map<string, string>();
+    let index = 0;
+
+    for (const row of query.data.rows) {
+      for (const slot of row.slots) {
+        if (!slot.code) {
+          continue;
+        }
+
+        if (!map.has(slot.code)) {
+          map.set(slot.code, COLOR_PALETTE[index % COLOR_PALETTE.length]);
+          index += 1;
+        }
+      }
+    }
+
+    return map;
+  }, [query.data]);
+
+  const gridTemplate = useMemo(
+    () => ({
+      gridTemplateColumns: `repeat(${Math.max(days.length, 1)}, minmax(80px, 1fr))`,
+    }),
+    [days.length],
   );
 
-  const legend = useMemo(() => {
-    if (!query.data) {
-      return [];
+  const renderSlot = (
+    slot: PlannerMatrixSlot,
+    matrix: PlannerMatrixResponse,
+  ) => {
+    if (days.length === 0) {
+      return null;
     }
 
-    const slots = query.data.mode === 'byUsers'
-      ? query.data.rows.flatMap((row) => row.slots)
-      : query.data.rows.flatMap((row) => row.slots);
+    const rangeStart = days[0];
+    const rangeEnd = days[days.length - 1];
 
-    const unique = Array.from(
-      new Map(
-        slots
-          .filter((slot) => slot.org?.slug)
-          .map((slot) => [slot.org!.slug.toUpperCase(), slot.org?.name ?? ''] as [string, string]),
-      ).entries(),
+    const slotStart = dayjs(slot.from).startOf('day');
+    const slotEnd = slot.to
+      ? dayjs(slot.to).startOf('day')
+      : dayjs(matrix.to).startOf('day');
+
+    const maxIndex = days.length - 1;
+    const startIndex = clampIndex(slotStart.diff(rangeStart, 'day'), maxIndex);
+    const endIndex = clampIndex(slotEnd.diff(rangeStart, 'day'), maxIndex);
+
+    if (endIndex < 0 || startIndex > maxIndex) {
+      return null;
+    }
+
+    const color = colorMap.get(slot.code) ?? COLOR_PALETTE[0];
+    const gridColumn = `${startIndex + 1} / ${endIndex + 2}`;
+    const subtitle =
+      mode === 'byOrgs'
+        ? slot.user?.fullName || slot.user?.email || ''
+        : slot.org?.slug?.toUpperCase() ?? slot.name;
+
+    return (
+      <div
+        key={slot.id}
+        className="planner-slot"
+        style={{ gridColumn, gridRow: '1' }}
+        title={slot.name}
+      >
+        <div
+          className="planner-slot-content"
+          style={{
+            borderColor: color,
+            backgroundColor: `${color}22`,
+          }}
+        >
+          <Typography.Text style={{ color }} strong>
+            {slot.code}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {`${dayjs(slot.from).format('DD.MM')} — ${
+              slot.to ? dayjs(slot.to).format('DD.MM') : t('planner.openEnded')
+            }`}
+          </Typography.Text>
+          {subtitle ? (
+            <Typography.Text type="secondary">{subtitle}</Typography.Text>
+          ) : null}
+        </div>
+      </div>
     );
+  };
 
-    return unique;
-  }, [query.data]);
+  if (!canView) {
+    return <Result status="403" title={t('admin.accessDenied')} />;
+  }
 
   return (
     <Flex vertical gap={16}>
@@ -187,34 +239,82 @@ const PlannerPage = () => {
       </Card>
 
       <Card>
-        <Table
-          rowKey="key"
-          loading={query.isLoading}
-          columns={columns}
-          dataSource={dataSource}
-          pagination={{
-            current: page,
-            pageSize,
-            total: query.data?.total ?? 0,
-            onChange: (nextPage) => setPage(nextPage),
-          }}
-        />
-      </Card>
-
-      {legend.length > 0 ? (
-        <Card title={t('planner.legendTitle')}>
-          <Flex gap={8} wrap>
-            {legend.map(([code, name]) => (
-              <Tag key={code} color="blue">
-                <Flex gap={4} align="center">
-                  <Typography.Text strong>{code}</Typography.Text>
-                  <Typography.Text type="secondary">{name}</Typography.Text>
-                </Flex>
-              </Tag>
-            ))}
+        {query.isLoading ? (
+          <Flex justify="center" className="py-12">
+            <Spin />
           </Flex>
-        </Card>
-      ) : null}
+        ) : !query.data || query.data.rows.length === 0 ? (
+          <Empty description={t('planner.noData')} />
+        ) : (
+          <div className="planner-table">
+            <div className="planner-header">
+              <div className="planner-info-cell">
+                <Typography.Text type="secondary">
+                  {mode === 'byUsers'
+                    ? t('planner.columns.employee')
+                    : t('planner.columns.org')}
+                </Typography.Text>
+              </div>
+              <div
+                className="planner-grid planner-grid-header"
+                style={gridTemplate}
+              >
+                {days.map((day) => (
+                  <div key={day.toISOString()} className="planner-grid-cell">
+                    <Typography.Text type="secondary">
+                      {day.format('DD.MM')}
+                    </Typography.Text>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {query.data.rows.map((row: PlannerMatrixRow) => (
+              <div key={row.key} className="planner-row">
+                <div className="planner-info-cell">
+                  <Typography.Text strong>{row.title}</Typography.Text>
+                  {row.subtitle ? (
+                    <Typography.Text type="secondary">
+                      {row.subtitle}
+                    </Typography.Text>
+                  ) : null}
+                </div>
+                <div
+                  className="planner-grid planner-grid-body"
+                  style={gridTemplate}
+                >
+                  {days.map((day) => (
+                    <div
+                      key={`cell-${row.key}-${day.toISOString()}`}
+                      className="planner-grid-cell"
+                    />
+                  ))}
+                  {row.slots.map((slot) => renderSlot(slot, query.data))}
+                  {row.slots.length === 0 ? (
+                    <div className="planner-empty-row">
+                      <Typography.Text type="secondary">
+                        {t('planner.noSlots')}
+                      </Typography.Text>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {isAdmin && query.data ? (
+          <Flex justify="end" className="mt-4">
+            <Pagination
+              current={page}
+              pageSize={pageSize}
+              total={query.data.total}
+              onChange={(nextPage) => setPage(nextPage)}
+              showSizeChanger={false}
+            />
+          </Flex>
+        ) : null}
+      </Card>
     </Flex>
   );
 };

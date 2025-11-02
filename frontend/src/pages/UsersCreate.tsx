@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import type { AxiosError } from 'axios';
 import {
   createUser,
   fetchOrgs,
@@ -35,8 +36,11 @@ const UsersCreatePage = () => {
       message.success(t('users.created'));
       navigate('/users');
     },
-    onError: () => {
-      message.error(t('common.error'));
+    onError: (error: unknown) => {
+      const axiosError = error as AxiosError<{ message?: string }>;
+      message.error(
+        axiosError.response?.data?.message ?? t('common.error'),
+      );
     },
   });
 
