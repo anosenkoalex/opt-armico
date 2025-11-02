@@ -19,26 +19,29 @@ import { UserRole } from '@prisma/client';
 
 @Controller('orgs')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.SUPER_ADMIN)
 export class OrgsController {
   constructor(private readonly orgsService: OrgsService) {}
 
   @Post()
+  @Roles(UserRole.SUPER_ADMIN)
   create(@Body(new ZodValidationPipe(createOrgSchema)) payload: CreateOrgDto) {
     return this.orgsService.create(payload);
   }
 
   @Get()
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   findAll() {
     return this.orgsService.findAll();
   }
 
   @Get(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   findOne(@Param('id') id: string) {
     return this.orgsService.findOne(id);
   }
 
   @Patch(':id')
+  @Roles(UserRole.SUPER_ADMIN)
   update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateOrgSchema)) payload: UpdateOrgDto,
@@ -47,6 +50,7 @@ export class OrgsController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.SUPER_ADMIN)
   remove(@Param('id') id: string) {
     return this.orgsService.remove(id);
   }

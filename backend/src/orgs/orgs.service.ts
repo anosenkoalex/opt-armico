@@ -30,7 +30,7 @@ export class OrgsService {
     });
 
     if (!org) {
-      throw new NotFoundException('Organization not found');
+      throw new NotFoundException('Организация не найдена');
     }
 
     return org;

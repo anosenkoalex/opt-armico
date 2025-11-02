@@ -1,10 +1,17 @@
 import axios from 'axios';
 
+export type UserRole =
+  | 'USER'
+  | 'AUDITOR'
+  | 'ORG_MANAGER'
+  | 'ADMIN'
+  | 'SUPER_ADMIN';
+
 export type JwtPayload = {
   sub: string;
   email: string;
   orgId: string | null;
-  role: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
+  role: UserRole;
 };
 
 export type LoginPayload = {
@@ -108,8 +115,9 @@ export type User = {
   email: string;
   fullName?: string | null;
   position?: string | null;
-  role: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
+  role: UserRole;
   orgId: string | null;
+  org?: Org | null;
 };
 
 export type MeProfile = {
@@ -117,7 +125,7 @@ export type MeProfile = {
   email: string;
   fullName: string | null;
   position: string | null;
-  role: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
+  role: UserRole;
   org: Org | null;
 };
 
@@ -224,6 +232,11 @@ export const fetchWorkplaces = async (params: {
   return data;
 };
 
+export const fetchOrgs = async () => {
+  const { data } = await api.get<Org[]>('/orgs');
+  return data;
+};
+
 export const createWorkplace = async (payload: {
   orgId: string;
   code: string;
@@ -294,6 +307,18 @@ export const updateAssignment = async (
 
 export const fetchUsers = async () => {
   const { data } = await api.get<User[]>('/users');
+  return data;
+};
+
+export const createUser = async (payload: {
+  fullName: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  orgId?: string;
+  position?: string;
+}) => {
+  const { data } = await api.post<User>('/users', payload);
   return data;
 };
 

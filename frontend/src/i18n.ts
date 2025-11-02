@@ -2,6 +2,8 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 void i18n.use(initReactI18next).init({
+  lng: 'ru',
+  fallbackLng: 'ru',
   resources: {
     en: {
       translation: {
@@ -13,10 +15,11 @@ void i18n.use(initReactI18next).init({
         },
         layout: {
           dashboard: 'Dashboard',
-          myPlace: 'My workplace',
+          mySchedule: 'My schedule',
           workplaces: 'Workplaces',
           assignments: 'Assignments',
           planner: 'Planner',
+          users: 'Employees',
           logout: 'Log out',
           welcome: 'Welcome',
         },
@@ -76,6 +79,25 @@ void i18n.use(initReactI18next).init({
             endRequired: 'End date is required',
           },
         },
+        users: {
+          title: 'Employees',
+          createTitle: 'Create employee',
+          createAction: 'Create employee',
+          created: 'Employee created',
+          fullName: 'Full name',
+          email: 'Email',
+          role: 'Role',
+          position: 'Position',
+          org: 'Organisation',
+          noOrg: 'Not assigned',
+          roles: {
+            AUDITOR: 'Auditor',
+            ORG_MANAGER: 'Organisation manager',
+            ADMIN: 'Administrator',
+            SUPER_ADMIN: 'Super administrator',
+            USER: 'Employee',
+          },
+        },
         planner: {
           mode: {
             users: 'By employees',
@@ -90,7 +112,7 @@ void i18n.use(initReactI18next).init({
           legendTitle: 'Legend',
         },
         myPlace: {
-          title: 'My profile',
+          title: 'My schedule',
           noAssignment: 'You have no active assignment right now.',
           startsAt: 'Starts at',
           endsAt: 'Ends at',
@@ -155,10 +177,11 @@ void i18n.use(initReactI18next).init({
         },
         layout: {
           dashboard: 'Главная',
-          myPlace: 'Моё место',
+          mySchedule: 'Моё расписание',
           workplaces: 'Рабочие места',
           assignments: 'Назначения',
           planner: 'Планировщик',
+          users: 'Сотрудники',
           logout: 'Выйти',
           welcome: 'Здравствуйте',
         },
@@ -218,6 +241,25 @@ void i18n.use(initReactI18next).init({
             endRequired: 'Укажите дату окончания',
           },
         },
+        users: {
+          title: 'Сотрудники',
+          createTitle: 'Создание сотрудника',
+          createAction: 'Создать сотрудника',
+          created: 'Сотрудник создан',
+          fullName: 'ФИО',
+          email: 'Email',
+          role: 'Роль',
+          position: 'Должность',
+          org: 'Организация',
+          noOrg: 'Не назначена',
+          roles: {
+            AUDITOR: 'Сотрудник',
+            ORG_MANAGER: 'Менеджер организации',
+            ADMIN: 'Администратор',
+            SUPER_ADMIN: 'Суперадминистратор',
+            USER: 'Пользователь',
+          },
+        },
         planner: {
           mode: {
             users: 'По сотрудникам',
@@ -232,7 +274,7 @@ void i18n.use(initReactI18next).init({
           legendTitle: 'Легенда',
         },
         myPlace: {
-          title: 'Мой профиль',
+          title: 'Моё расписание',
           noAssignment: 'Сейчас у вас нет активного назначения.',
           startsAt: 'Начало',
           endsAt: 'Окончание',

@@ -27,18 +27,25 @@ const AppLayout = () => {
   const { logout, user, profile, isFetchingProfile } = useAuth();
 
   const navigationItems = useMemo(() => {
-    const items = [
-      { key: 'dashboard', path: '/dashboard', label: t('layout.dashboard') },
-      { key: 'my-place', path: '/my-place', label: t('layout.myPlace') },
-    ];
+    const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+    const isWorker = user?.role === 'AUDITOR' || user?.role === 'ORG_MANAGER';
 
-    if (user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN') {
+    const items = [{
+      key: 'dashboard',
+      path: '/dashboard',
+      label: t('layout.dashboard'),
+    }];
+
+    if (isWorker) {
+      items.push({
+        key: 'my-place',
+        path: '/my-place',
+        label: t('layout.mySchedule'),
+      });
+    }
+
+    if (isAdmin) {
       items.push(
-        {
-          key: 'workplaces',
-          path: '/workplaces',
-          label: t('layout.workplaces'),
-        },
         {
           key: 'assignments',
           path: '/assignments',
@@ -48,6 +55,16 @@ const AppLayout = () => {
           key: 'planner',
           path: '/planner',
           label: t('layout.planner'),
+        },
+        {
+          key: 'workplaces',
+          path: '/workplaces',
+          label: t('layout.workplaces'),
+        },
+        {
+          key: 'users',
+          path: '/users',
+          label: t('layout.users'),
         },
       );
     }

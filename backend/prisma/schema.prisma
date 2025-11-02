@@ -9,6 +9,8 @@ generator client {
 
 enum UserRole {
   USER
+  AUDITOR
+  ORG_MANAGER
   ADMIN
   SUPER_ADMIN
 }

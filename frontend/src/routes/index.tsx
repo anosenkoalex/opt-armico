@@ -5,6 +5,8 @@ import MyPlace from '../pages/MyPlace.js';
 import WorkplacesPage from '../pages/Workplaces.js';
 import AssignmentsPage from '../pages/Assignments.js';
 import PlannerPage from '../pages/Planner.js';
+import UsersPage from '../pages/Users.js';
+import UsersCreatePage from '../pages/UsersCreate.js';
 import AppLayout from '../components/Layout.js';
 import { useAuth } from '../context/AuthContext.js';
 
@@ -36,6 +38,8 @@ const AppRoutes = () => {
         { path: 'workplaces', element: <WorkplacesPage /> },
         { path: 'assignments', element: <AssignmentsPage /> },
         { path: 'planner', element: <PlannerPage /> },
+        { path: 'users', element: <UsersPage /> },
+        { path: 'users/create', element: <UsersCreatePage /> },
       ],
     },
     { path: '*', element: <Navigate to="/dashboard" replace /> },

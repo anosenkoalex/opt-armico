@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
@@ -54,13 +59,21 @@ export class UsersService implements OnModuleInit {
     const org = await this.prisma.org.findUnique({ where: { id: orgId } });
 
     if (!org) {
-      throw new NotFoundException('Organization not found');
+      throw new NotFoundException('Организация не найдена');
     }
 
     return org;
   }
 
   async create(data: CreateUserDto) {
+    const existing = await this.prisma.user.findUnique({
+      where: { email: data.email },
+    });
+
+    if (existing) {
+      throw new ConflictException('Пользователь с таким email уже существует');
+    }
+
     const org = await this.ensureOrg(data.orgId ?? null);
     const passwordHash = await bcrypt.hash(data.password, 10);
 
@@ -68,9 +81,9 @@ export class UsersService implements OnModuleInit {
       data: {
         email: data.email,
         password: passwordHash,
-        role: data.role ?? UserRole.USER,
+        role: data.role,
         orgId: org?.id ?? null,
-        fullName: data.fullName ?? null,
+        fullName: data.fullName,
         position: data.position ?? null,
       },
       select: this.baseSelect(),
@@ -91,7 +104,7 @@ export class UsersService implements OnModuleInit {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('Пользователь не найден');
     }
 
     return user;
@@ -147,7 +160,10 @@ export class UsersService implements OnModuleInit {
     await this.findOne(id);
     await this.prisma.notification.deleteMany({ where: { userId: id } });
     await this.prisma.assignment.deleteMany({ where: { userId: id } });
-    return this.prisma.user.delete({ where: { id } });
+    return this.prisma.user.delete({
+      where: { id },
+      select: this.baseSelect(),
+    });
   }
 
   async getProfile(id: string) {
@@ -188,6 +204,13 @@ export class UsersService implements OnModuleInit {
       role: true,
       createdAt: true,
       updatedAt: true,
+      org: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
     } as const;
   }
 }
