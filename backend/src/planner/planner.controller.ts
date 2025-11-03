@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
 import { PlannerService } from './planner.service.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
@@ -8,10 +8,17 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { z } from 'zod';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { JwtPayload } from '../auth/jwt-payload.interface.js';
+import type { Response } from 'express';
+
+const plannerModeSchema = z
+  .enum(['byUsers', 'byWorkplaces', 'byOrgs'])
+  .default('byUsers')
+  .transform((mode) => (mode === 'byOrgs' ? 'byWorkplaces' : mode))
+  .pipe(z.enum(['byUsers', 'byWorkplaces']));
 
 const plannerMatrixSchema = z
   .object({
-    mode: z.enum(['byUsers', 'byOrgs']).default('byUsers'),
+    mode: plannerModeSchema,
     from: z.coerce.date(),
     to: z.coerce.date(),
     page: z.coerce.number().int().min(1).default(1),
@@ -27,6 +34,22 @@ const plannerMatrixSchema = z
 
 type PlannerMatrixDto = z.infer<typeof plannerMatrixSchema>;
 
+const plannerExportSchema = z
+  .object({
+    from: z.coerce.date(),
+    to: z.coerce.date(),
+    mode: z.enum(['workplaces', 'users']).default('workplaces'),
+    status: z.nativeEnum(AssignmentStatus).optional(),
+    userId: z.string().min(1).optional(),
+    orgId: z.string().min(1).optional(),
+  })
+  .refine((data) => data.to >= data.from, {
+    message: 'to must be after from',
+    path: ['to'],
+  });
+
+type PlannerExportDto = z.infer<typeof plannerExportSchema>;
+
 @Controller('planner')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class PlannerController {
@@ -39,5 +62,23 @@ export class PlannerController {
     @Query(new ZodValidationPipe(plannerMatrixSchema)) query: PlannerMatrixDto,
   ) {
     return this.plannerService.getMatrix(user, query);
+  }
+
+  @Get('export')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.USER)
+  async export(
+    @CurrentUser() user: JwtPayload,
+    @Query(new ZodValidationPipe(plannerExportSchema)) query: PlannerExportDto,
+    @Res() res: Response,
+  ) {
+    const buffer = await this.plannerService.exportMatrixToExcel(user, query);
+
+    res
+      .setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+      .setHeader('Content-Disposition', 'attachment; filename="schedule.xlsx"')
+      .send(buffer);
   }
 }

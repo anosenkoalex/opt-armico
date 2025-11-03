@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
+const matrixModeSchema = z
+  .enum(['byUsers', 'byWorkplaces', 'byOrgs'])
+  .default('byUsers')
+  .transform((mode) => (mode === 'byOrgs' ? 'byWorkplaces' : mode))
+  .pipe(z.enum(['byUsers', 'byWorkplaces']));
+
 export const matrixQuerySchema = z.object({
-  mode: z.enum(['byUsers', 'byOrgs']).default('byUsers'),
+  mode: matrixModeSchema,
   dateFrom: z.coerce.date(),
   dateTo: z.coerce.date(),
   page: z.coerce.number().int().positive().default(1),

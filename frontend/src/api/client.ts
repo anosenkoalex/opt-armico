@@ -166,6 +166,7 @@ export type PlannerMatrixSlot = {
   status: AssignmentStatus;
   user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'> | null;
   org?: Pick<Org, 'id' | 'name' | 'slug'> | null;
+  workplace?: { id: string; code: string; name: string; location?: string | null } | null;
 };
 
 export type PlannerMatrixRow = {
@@ -176,7 +177,7 @@ export type PlannerMatrixRow = {
 };
 
 export type PlannerMatrixResponse = {
-  mode: 'byUsers' | 'byOrgs';
+  mode: 'byUsers' | 'byWorkplaces';
   from: string;
   to: string;
   page: number;
@@ -300,6 +301,10 @@ export const updateWorkplace = async (
   return data;
 };
 
+export const deleteWorkplace = async (id: string) => {
+  await api.delete(`/workplaces/${id}`);
+};
+
 export const fetchAssignments = async (params: {
   userId?: string;
   workplaceId?: string;
@@ -353,14 +358,25 @@ export const createUser = async (payload: {
   email: string;
   password: string;
   role: UserRole;
-  orgId?: string;
 }) => {
   const { data } = await api.post<User>('/users', payload);
   return data;
 };
 
+export const updateUser = async (
+  id: string,
+  payload: Partial<{ fullName: string; email: string; password: string; role: UserRole }>,
+) => {
+  const { data } = await api.patch<User>(`/users/${id}`, payload);
+  return data;
+};
+
+export const deleteUser = async (id: string) => {
+  await api.delete(`/users/${id}`);
+};
+
 export const fetchPlannerMatrix = async (params: {
-  mode?: 'byUsers' | 'byOrgs';
+  mode?: 'byUsers' | 'byWorkplaces';
   from: string;
   to: string;
   page?: number;
@@ -373,6 +389,22 @@ export const fetchPlannerMatrix = async (params: {
     params,
   });
   return data;
+};
+
+export const downloadPlannerExcel = async (params: {
+  from: string;
+  to: string;
+  mode: 'workplaces' | 'users';
+  status?: AssignmentStatus;
+  userId?: string;
+  orgId?: string;
+}) => {
+  const response = await api.get<Blob>('/planner/export', {
+    params,
+    responseType: 'blob',
+  });
+
+  return response.data;
 };
 
 export const fetchMySchedule = async () => {

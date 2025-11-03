@@ -6,10 +6,6 @@ export const CreateUserSchema = z.object({
   email: z.string().email('Некорректный e-mail'),
   password: z.string().min(6, 'Минимум 6 символов'),
   role: z.nativeEnum(UserRole).default(UserRole.USER),
-  orgId: z
-    .string()
-    .optional()
-    .transform((value) => (value && value.trim() !== '' ? value : undefined)),
   position: z.string().optional(),
 });
 

@@ -76,6 +76,18 @@ export class UsersService implements OnModuleInit {
     return org;
   }
 
+  private async getDefaultOrg() {
+    const defaultOrg = await this.prisma.org.findFirst({
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!defaultOrg) {
+      throw new NotFoundException('Default organization not found');
+    }
+
+    return defaultOrg;
+  }
+
   async create(data: CreateUserDto) {
     const existing = await this.prisma.user.findUnique({
       where: { email: data.email },
@@ -85,7 +97,16 @@ export class UsersService implements OnModuleInit {
       throw new ConflictException('Пользователь с таким e-mail уже существует');
     }
 
-    const org = await this.ensureOrg(data.orgId ?? null);
+    let orgId = (data as CreateUserDto & { orgId?: string | null }).orgId ?? null;
+
+    if (orgId) {
+      const org = await this.ensureOrg(orgId);
+      orgId = org?.id ?? null;
+    } else {
+      const defaultOrg = await this.getDefaultOrg();
+      orgId = defaultOrg.id;
+    }
+
     const passwordHash = await bcrypt.hash(data.password, 10);
     const position = data.position?.trim() ? data.position.trim() : null;
     const role = data.role ?? UserRole.USER;
@@ -95,7 +116,7 @@ export class UsersService implements OnModuleInit {
         email: data.email.trim(),
         password: passwordHash,
         role,
-        orgId: org?.id ?? null,
+        orgId,
         fullName: data.fullName.trim(),
         position,
       },
@@ -131,11 +152,6 @@ export class UsersService implements OnModuleInit {
     await this.findOne(id);
     const payload: UpdateUserDto & { password?: string | null } = { ...data };
 
-    if ('orgId' in payload) {
-      const org = await this.ensureOrg(payload.orgId);
-      payload.orgId = org?.id ?? undefined;
-    }
-
     if (payload.password) {
       payload.password = await bcrypt.hash(payload.password, 10);
     }
@@ -143,19 +159,16 @@ export class UsersService implements OnModuleInit {
     const updateData: Record<string, unknown> = {};
 
     if (payload.email !== undefined) {
-      updateData.email = payload.email;
-    }
-
-    if (payload.orgId !== undefined) {
-      updateData.orgId = payload.orgId;
+      updateData.email = payload.email.trim();
     }
 
     if (payload.fullName !== undefined) {
-      updateData.fullName = payload.fullName;
+      updateData.fullName = payload.fullName.trim();
     }
 
     if (payload.position !== undefined) {
-      updateData.position = payload.position;
+      const normalized = payload.position?.trim();
+      updateData.position = normalized ? normalized : null;
     }
 
     if (payload.role !== undefined) {

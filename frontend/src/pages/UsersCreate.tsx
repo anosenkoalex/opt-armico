@@ -1,15 +1,9 @@
 import { Button, Card, Form, Input, Result, Select, Typography, message } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import type { AxiosError } from 'axios';
-import {
-  createUser,
-  fetchOrgs,
-  type Org,
-  type UserRole,
-} from '../api/client.js';
+import { createUser, type UserRole } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
 const roleOptions: UserRole[] = ['USER', 'SUPER_ADMIN'];
@@ -23,12 +17,6 @@ const UsersCreatePage = () => {
 
   const isAdmin = user?.role === 'SUPER_ADMIN';
 
-  const orgsQuery = useQuery({
-    queryKey: ['orgs'],
-    queryFn: fetchOrgs,
-    enabled: isAdmin,
-  });
-
   const mutation = useMutation({
     mutationFn: createUser,
     onSuccess: () => {
@@ -38,20 +26,9 @@ const UsersCreatePage = () => {
     },
     onError: (error: unknown) => {
       const axiosError = error as AxiosError<{ message?: string }>;
-      message.error(
-        axiosError.response?.data?.message ?? t('common.error'),
-      );
+      message.error(axiosError.response?.data?.message ?? t('common.error'));
     },
   });
-
-  const orgOptions = useMemo(
-    () =>
-      (orgsQuery.data ?? []).map((org: Org) => ({
-        label: org.name,
-        value: org.id,
-      })),
-    [orgsQuery.data],
-  );
 
   if (!isAdmin) {
     return <Result status="403" title={t('admin.accessDenied')} />;
@@ -64,20 +41,18 @@ const UsersCreatePage = () => {
         form={form}
         layout="vertical"
         className="mt-4 max-w-xl"
-        initialValues={{ role: 'USER' as UserRole }}
+        initialValues={{ role: roleOptions[0] }}
         onFinish={(values: {
           fullName: string;
           email: string;
           password: string;
           role: UserRole;
-          orgId?: string;
         }) => {
           mutation.mutate({
-            fullName: values.fullName,
-            email: values.email,
+            fullName: values.fullName.trim(),
+            email: values.email.trim(),
             password: values.password,
             role: values.role,
-            orgId: values.orgId || undefined,
           });
         }}
       >
@@ -115,14 +90,6 @@ const UsersCreatePage = () => {
               label: t(`users.roles.${role}` as const),
               value: role,
             }))}
-          />
-        </Form.Item>
-        <Form.Item name="orgId" label={t('users.org')}>
-          <Select
-            allowClear
-            loading={orgsQuery.isLoading}
-            options={orgOptions}
-            placeholder={t('users.noOrg')}
           />
         </Form.Item>
         <Form.Item>

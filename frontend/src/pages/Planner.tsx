@@ -1,4 +1,5 @@
 import {
+  Button,
   Card,
   DatePicker,
   Empty,
@@ -6,14 +7,18 @@ import {
   Pagination,
   Result,
   Select,
+  Space,
   Spin,
   Typography,
+  message,
 } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
+  downloadPlannerExcel,
   PlannerMatrixResponse,
   PlannerMatrixRow,
   PlannerMatrixSlot,
@@ -34,7 +39,7 @@ const COLOR_PALETTE = [
   '#2f54eb',
 ];
 
-type Mode = 'byUsers' | 'byOrgs';
+type Mode = 'byUsers' | 'byWorkplaces';
 
 const clampIndex = (value: number, max: number) => {
   if (value < 0) {
@@ -61,13 +66,13 @@ const PlannerPage = () => {
   const isSuperAdmin = role === 'SUPER_ADMIN';
   const canView = role === 'SUPER_ADMIN' || role === 'USER';
   const canPaginate = isSuperAdmin;
-  const canUseOrgMode = isSuperAdmin || Boolean(profile?.org?.id);
+  const canUseWorkplaceMode = isSuperAdmin || Boolean(profile?.org?.id);
 
   useEffect(() => {
-    if (mode === 'byOrgs' && !canUseOrgMode) {
+    if (mode === 'byWorkplaces' && !canUseWorkplaceMode) {
       setMode('byUsers');
     }
-  }, [mode, canUseOrgMode]);
+  }, [mode, canUseWorkplaceMode]);
 
   const query = useQuery<PlannerMatrixResponse>({
     queryKey: [
@@ -170,8 +175,6 @@ const PlannerPage = () => {
     }
 
     const rangeStart = days[0];
-    const rangeEnd = days[days.length - 1];
-
     const slotStart = dayjs(slot.from).startOf('day');
     const slotEnd = slot.to
       ? dayjs(slot.to).startOf('day')
@@ -188,9 +191,13 @@ const PlannerPage = () => {
     const color = colorMap.get(slot.code) ?? COLOR_PALETTE[0];
     const gridColumn = `${startIndex + 1} / ${endIndex + 2}`;
     const subtitle =
-      mode === 'byOrgs'
+      mode === 'byWorkplaces'
         ? slot.user?.fullName || slot.user?.email || ''
-        : slot.org?.slug?.toUpperCase() ?? slot.name;
+        : slot.workplace
+          ? `${slot.workplace.code}${
+              slot.workplace.name ? ` — ${slot.workplace.name}` : ''
+            }`
+          : slot.org?.slug?.toUpperCase() ?? slot.name;
 
     return (
       <div
@@ -222,6 +229,43 @@ const PlannerPage = () => {
     );
   };
 
+  const handleDownload = async () => {
+    const [fromRaw, toRaw] = range;
+
+    if (!fromRaw || !toRaw) {
+      return;
+    }
+
+    try {
+      const params = {
+        from: fromRaw.startOf('day').toISOString(),
+        to: toRaw.endOf('day').toISOString(),
+        mode: mode === 'byUsers' ? 'users' : 'workplaces',
+        userId: undefined as string | undefined,
+        orgId: undefined as string | undefined,
+      };
+
+      if (!isSuperAdmin && user?.id) {
+        params.userId = user.id;
+      }
+
+      if (!isSuperAdmin && profile?.org?.id) {
+        params.orgId = profile.org.id;
+      }
+
+      const blob = await downloadPlannerExcel(params);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'schedule.xlsx';
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(error);
+      message.error(t('planner.downloadError'));
+    }
+  };
+
   if (!canView) {
     return <Result status="403" title={t('admin.accessDenied')} />;
   }
@@ -238,8 +282,8 @@ const PlannerPage = () => {
             }}
             options={[
               { value: 'byUsers', label: t('planner.mode.users') },
-              ...(canUseOrgMode
-                ? [{ value: 'byOrgs', label: t('planner.mode.orgs') }]
+              ...(canUseWorkplaceMode
+                ? [{ value: 'byWorkplaces', label: t('planner.mode.workplaces') }]
                 : []),
             ]}
           />
@@ -255,7 +299,15 @@ const PlannerPage = () => {
             allowClear={false}
             format="DD.MM.YYYY"
           />
-          {query.isFetching && <Spin size="small" />}
+          <Space>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={handleDownload}
+            >
+              {t('planner.download')}
+            </Button>
+            {query.isFetching && <Spin size="small" />}
+          </Space>
         </Flex>
       </Card>
 
@@ -273,7 +325,7 @@ const PlannerPage = () => {
                 <Typography.Text type="secondary">
                   {mode === 'byUsers'
                     ? t('planner.columns.employee')
-                    : t('planner.columns.org')}
+                    : t('planner.columns.workplace')}
                 </Typography.Text>
               </div>
               <div
@@ -304,12 +356,6 @@ const PlannerPage = () => {
                   className="planner-grid planner-grid-body"
                   style={gridTemplate}
                 >
-                  {days.map((day) => (
-                    <div
-                      key={`cell-${row.key}-${day.toISOString()}`}
-                      className="planner-grid-cell"
-                    />
-                  ))}
                   {row.slots.map((slot) => renderSlot(slot, query.data))}
                   {row.slots.length === 0 ? (
                     <div className="planner-empty-row">
