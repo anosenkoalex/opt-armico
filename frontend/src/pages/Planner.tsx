@@ -10,7 +10,7 @@ import {
   Typography,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -58,11 +58,16 @@ const PlannerPage = () => {
   const pageSize = 10;
 
   const role = user?.role ?? 'USER';
-  const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
-  const isAuditor = role === 'AUDITOR';
-  const isOrgManager = role === 'ORG_MANAGER';
-  const canView = isAdmin || isAuditor || isOrgManager;
-  const canPaginate = isAdmin || isOrgManager;
+  const isSuperAdmin = role === 'SUPER_ADMIN';
+  const canView = role === 'SUPER_ADMIN' || role === 'USER';
+  const canPaginate = isSuperAdmin;
+  const canUseOrgMode = isSuperAdmin || Boolean(profile?.org?.id);
+
+  useEffect(() => {
+    if (mode === 'byOrgs' && !canUseOrgMode) {
+      setMode('byUsers');
+    }
+  }, [mode, canUseOrgMode]);
 
   const query = useQuery<PlannerMatrixResponse>({
     queryKey: [
@@ -92,11 +97,11 @@ const PlannerPage = () => {
         orgId: undefined as string | undefined,
       };
 
-      if (isAuditor && user?.id) {
+      if (!isSuperAdmin && user?.id) {
         params.userId = user.id;
       }
 
-      if (isOrgManager && profile?.org?.id) {
+      if (!isSuperAdmin && profile?.org?.id) {
         params.orgId = profile.org.id;
       }
 
@@ -233,7 +238,9 @@ const PlannerPage = () => {
             }}
             options={[
               { value: 'byUsers', label: t('planner.mode.users') },
-              { value: 'byOrgs', label: t('planner.mode.orgs') },
+              ...(canUseOrgMode
+                ? [{ value: 'byOrgs', label: t('planner.mode.orgs') }]
+                : []),
             ]}
           />
           <RangePicker

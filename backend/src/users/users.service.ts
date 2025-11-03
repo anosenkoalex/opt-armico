@@ -56,7 +56,7 @@ export class UsersService implements OnModuleInit {
           role: UserRole.SUPER_ADMIN,
           orgId: org.id,
           fullName: 'System Administrator',
-          position: 'Administrator',
+          position: null,
         },
       });
     }
@@ -88,12 +88,13 @@ export class UsersService implements OnModuleInit {
     const org = await this.ensureOrg(data.orgId ?? null);
     const passwordHash = await bcrypt.hash(data.password, 10);
     const position = data.position?.trim() ? data.position.trim() : null;
+    const role = data.role ?? UserRole.USER;
 
     const created = await this.prisma.user.create({
       data: {
         email: data.email.trim(),
         password: passwordHash,
-        role: data.role,
+        role,
         orgId: org?.id ?? null,
         fullName: data.fullName.trim(),
         position,

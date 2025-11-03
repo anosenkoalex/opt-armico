@@ -33,7 +33,7 @@ export class WorkplacesController {
   constructor(private readonly workplacesService: WorkplacesService) {}
 
   @Post()
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   create(
     @Body(new ZodValidationPipe(createWorkplaceSchema))
     payload: CreateWorkplaceDto,
@@ -42,7 +42,7 @@ export class WorkplacesController {
   }
 
   @Get()
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   findAll(
     @Query(new ZodValidationPipe(listWorkplacesSchema))
     query: ListWorkplacesDto,
@@ -51,13 +51,13 @@ export class WorkplacesController {
   }
 
   @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   findOne(@Param('id') id: string) {
     return this.workplacesService.findOne(id);
   }
 
   @Patch(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateWorkplaceSchema))

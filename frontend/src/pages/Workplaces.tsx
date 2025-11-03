@@ -44,7 +44,7 @@ const WorkplacesPage = () => {
   );
   const [form] = Form.useForm();
 
-  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const isAdmin = user?.role === 'SUPER_ADMIN';
   const orgId = profile?.org?.id ?? null;
 
   const workplacesQuery = useQuery<PaginatedResponse<Workplace>>({

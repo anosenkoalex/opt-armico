@@ -104,11 +104,8 @@ void i18n.use(initReactI18next).init({
           org: 'Организация',
           noOrg: 'Не назначена',
           roles: {
-            AUDITOR: 'Сотрудник',
-            ORG_MANAGER: 'Менеджер организации',
-            ADMIN: 'Администратор',
-            SUPER_ADMIN: 'Суперадминистратор',
-            USER: 'Пользователь',
+            USER: 'Сотрудник',
+            SUPER_ADMIN: 'Администратор',
           },
         },
         planner: {

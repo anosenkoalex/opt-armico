@@ -27,8 +27,8 @@ const AppLayout = () => {
   const { logout, user, profile, isFetchingProfile } = useAuth();
 
   const navigationItems = useMemo(() => {
-    const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
-    const isWorker = user?.role === 'AUDITOR' || user?.role === 'ORG_MANAGER';
+    const isAdmin = user?.role === 'SUPER_ADMIN';
+    const isWorker = user?.role === 'USER';
 
     const items = [{
       key: 'dashboard',
