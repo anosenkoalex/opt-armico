@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { AssignmentStatus, Prisma, UserRole } from '@prisma/client';
+import ExcelJS from 'exceljs';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { JwtPayload } from '../auth/jwt-payload.interface.js';
 
-export type PlannerMode = 'byUsers' | 'byOrgs';
+export type PlannerMode = 'byUsers' | 'byWorkplaces';
 
 export interface PlannerMatrixQuery {
   mode: PlannerMode;
@@ -34,6 +35,12 @@ interface PlannerMatrixSlot {
     name: string;
     slug: string;
   };
+  workplace?: {
+    id: string;
+    code: string;
+    name: string;
+    location: string | null;
+  };
 }
 
 interface PlannerMatrixRow {
@@ -61,9 +68,97 @@ export class PlannerService {
     auth: JwtPayload,
     params: PlannerMatrixQuery,
   ): Promise<PlannerMatrixResponse> {
+    const { page, pageSize, ...rest } = params;
+    const rows = await this.collectRows(auth, rest);
+    const total = rows.length;
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+
+    const paginatedRows = rows.slice(start, end);
+
+    return {
+      mode: params.mode,
+      from: params.from.toISOString(),
+      to: params.to.toISOString(),
+      page,
+      pageSize,
+      total,
+      rows: paginatedRows,
+    };
+  }
+
+  async exportMatrixToExcel(
+    auth: JwtPayload,
+    params: {
+      from: Date;
+      to: Date;
+      mode: 'workplaces' | 'users';
+      status?: AssignmentStatus;
+      userId?: string;
+      orgId?: string;
+    },
+  ): Promise<Buffer> {
+    const mode: PlannerMode =
+      params.mode === 'users' ? 'byUsers' : 'byWorkplaces';
+
+    const rows = await this.collectRows(auth, {
+      mode,
+      from: params.from,
+      to: params.to,
+      status: params.status,
+      userId: params.userId,
+      orgId: params.orgId,
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Расписание');
+
+    sheet.columns = [
+      { header: 'Сотрудник', key: 'employee', width: 40 },
+      { header: 'Рабочее место', key: 'workplace', width: 40 },
+      { header: 'Дата начала', key: 'startsAt', width: 20 },
+      { header: 'Дата окончания', key: 'endsAt', width: 20 },
+      { header: 'Статус', key: 'status', width: 20 },
+    ];
+
+    for (const row of rows) {
+      for (const slot of row.slots) {
+        const employeeName = slot.user?.fullName?.trim()
+          ? slot.user.fullName
+          : slot.user?.email ?? '';
+        const workplaceLabel = slot.workplace
+          ? `${slot.workplace.code}${
+              slot.workplace.name ? ` — ${slot.workplace.name}` : ''
+            }`
+          : `${slot.code}${slot.name ? ` — ${slot.name}` : ''}`;
+
+        const startsAt = slot.from ? new Date(slot.from) : undefined;
+        const endsAt = slot.to ? new Date(slot.to) : null;
+
+        sheet.addRow({
+          employee: employeeName,
+          workplace: workplaceLabel,
+          startsAt,
+          endsAt,
+          status: slot.status,
+        });
+      }
+    }
+
+    sheet.getColumn(3).numFmt = 'dd.mm.yyyy';
+    sheet.getColumn(4).numFmt = 'dd.mm.yyyy';
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  private async collectRows(
+    auth: JwtPayload,
+    params: Omit<PlannerMatrixQuery, 'page' | 'pageSize'>,
+  ): Promise<PlannerMatrixRow[]> {
     const isSuperAdmin = auth.role === UserRole.SUPER_ADMIN;
 
-    if (!isSuperAdmin && params.mode === 'byOrgs' && !auth.orgId) {
+    if (!isSuperAdmin && params.mode === 'byWorkplaces' && !auth.orgId) {
       throw new NotFoundException('Пользователь не привязан к организации');
     }
 
@@ -82,8 +177,8 @@ export class PlannerService {
     }
 
     const orderBy: Prisma.AssignmentOrderByWithRelationInput[] =
-      params.mode === 'byOrgs'
-        ? [{ workplace: { orgId: 'asc' } }, { startsAt: 'asc' }]
+      params.mode === 'byWorkplaces'
+        ? [{ workplace: { code: 'asc' } }, { startsAt: 'asc' }]
         : [{ userId: 'asc' }, { startsAt: 'asc' }];
 
     const assignments = await this.prisma.assignment.findMany({
@@ -124,20 +219,29 @@ export class PlannerService {
         status: assignment.status,
         user: assignment.user,
         org: assignment.workplace.org ?? undefined,
+        workplace: {
+          id: assignment.workplace.id,
+          code: assignment.workplace.code,
+          name: assignment.workplace.name,
+          location: assignment.workplace.location ?? null,
+        },
       };
 
-      if (params.mode === 'byOrgs') {
-        const orgId = assignment.workplace.orgId;
-        const org = assignment.workplace.org;
-        const key = orgId;
-        const title = org?.name?.trim() ? org.name : 'Без названия';
+      if (params.mode === 'byWorkplaces') {
+        const workplace = assignment.workplace;
+        const key = workplace.id;
+        const namePart = workplace.name?.trim();
+        const codePart = workplace.code?.trim();
+        const title = [codePart, namePart].filter(Boolean).join(' — ');
+        const subtitle = workplace.location?.trim();
 
         const existing = groups.get(key);
 
         if (!existing) {
           groups.set(key, {
             key,
-            title,
+            title: title || codePart || namePart || 'Рабочее место',
+            subtitle: subtitle || undefined,
             slots: [slot],
           });
         } else {
@@ -164,24 +268,11 @@ export class PlannerService {
       }
     }
 
-    const sortedGroups = Array.from(groups.values()).map((group) => ({
-      ...group,
-      slots: group.slots.sort((a, b) => a.from.localeCompare(b.from)),
-    }));
-
-    const total = sortedGroups.length;
-    const start = (params.page - 1) * params.pageSize;
-    const end = start + params.pageSize;
-    const paginatedRows = sortedGroups.slice(start, end);
-
-    return {
-      mode: params.mode,
-      from: params.from.toISOString(),
-      to: params.to.toISOString(),
-      page: params.page,
-      pageSize: params.pageSize,
-      total,
-      rows: paginatedRows,
-    };
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        slots: group.slots.sort((a, b) => a.from.localeCompare(b.from)),
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title, 'ru', { numeric: true }));
   }
 }

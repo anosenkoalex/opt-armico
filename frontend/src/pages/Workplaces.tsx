@@ -23,6 +23,7 @@ import {
   PaginatedResponse,
   Workplace,
   createWorkplace,
+  deleteWorkplace,
   fetchWorkplaces,
   updateWorkplace,
 } from '../api/client.js';
@@ -112,6 +113,20 @@ const WorkplacesPage = () => {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: deleteWorkplace,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workplaces'] });
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      message.success(t('workplaces.deleted'));
+    },
+    onError: (error: unknown) => {
+      console.error(error);
+      const axiosError = error as AxiosError<{ message?: string }>;
+      message.error(axiosError.response?.data?.message ?? t('common.error'));
+    },
+  });
+
   const columns: ColumnsType<Workplace> = useMemo(
     () => [
       {
@@ -138,24 +153,44 @@ const WorkplacesPage = () => {
         title: t('workplaces.actions'),
         key: 'actions',
         render: (_value, record) => (
-          <Button
-            type="link"
-            onClick={() => {
-              setEditingWorkplace(record);
-              form.setFieldsValue({
-                code: record.code,
-                name: record.name,
-                isActive: record.isActive,
-              });
-              setIsModalOpen(true);
-            }}
-          >
-            {t('common.edit')}
-          </Button>
+          <Space size="small">
+            <Button
+              type="link"
+              onClick={() => {
+                setEditingWorkplace(record);
+                form.setFieldsValue({
+                  code: record.code,
+                  name: record.name,
+                  isActive: record.isActive,
+                });
+                setIsModalOpen(true);
+              }}
+            >
+              {t('common.edit')}
+            </Button>
+            <Button
+              type="link"
+              danger
+              onClick={() => {
+                Modal.confirm({
+                  title: t('workplaces.deleteConfirmTitle'),
+                  content: t('workplaces.deleteConfirmDescription', {
+                    code: record.code,
+                  }),
+                  okText: t('common.yes'),
+                  cancelText: t('common.cancel'),
+                  okButtonProps: { danger: true },
+                  onOk: () => deleteMutation.mutateAsync(record.id),
+                });
+              }}
+            >
+              {t('common.delete')}
+            </Button>
+          </Space>
         ),
       },
     ],
-    [t],
+    [form, deleteMutation, t],
   );
 
   const handleModalOk = async () => {
