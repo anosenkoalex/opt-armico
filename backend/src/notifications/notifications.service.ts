@@ -17,7 +17,7 @@ export class NotificationsService {
   async notifyMany(
     userIds: string[],
     type: NotificationType,
-    payload: Record<string, unknown>,
+    payload: Prisma.JsonObject,
   ): Promise<void> {
     if (userIds.length === 0) {
       return;

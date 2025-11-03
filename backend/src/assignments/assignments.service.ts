@@ -7,15 +7,20 @@ import {
   AssignmentStatus,
   NotificationType,
   Prisma,
+  UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CreateAssignmentDto } from './dto/create-assignment.dto.js';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto.js';
 import { ListAssignmentsDto } from './dto/list-assignments.dto.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 
 @Injectable()
 export class AssignmentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   private buildWhere(params: ListAssignmentsDto): Prisma.AssignmentWhereInput {
     const where: Prisma.AssignmentWhereInput = {};
@@ -79,7 +84,14 @@ export class AssignmentsService {
     assignment: Prisma.AssignmentGetPayload<{
       include: {
         workplace: {
-          select: { id: true; code: true; name: true; location: true };
+          select: {
+            id: true;
+            code: true;
+            name: true;
+            location: true;
+            orgId: true;
+            org: { select: { id: true; name: true; slug: true } };
+          };
         };
       };
     }>,
@@ -93,21 +105,30 @@ export class AssignmentsService {
       startsAt: assignment.startsAt.toISOString(),
       endsAt: assignment.endsAt ? assignment.endsAt.toISOString() : null,
       status: assignment.status,
+      orgId: assignment.workplace.orgId,
+      orgName: assignment.workplace.org?.name ?? null,
+      orgSlug: assignment.workplace.org?.slug ?? null,
     } satisfies Prisma.JsonObject;
   }
 
-  private async createNotification(
+  private async resolveRecipients(
     userId: string,
-    type: NotificationType,
-    payload: Prisma.JsonObject,
-  ) {
-    await this.prisma.notification.create({
-      data: {
-        userId,
-        type,
-        payload,
-      },
-    });
+    orgId: string | null,
+  ): Promise<string[]> {
+    const recipients = new Set<string>([userId]);
+
+    if (orgId) {
+      const managers = await this.prisma.user.findMany({
+        where: { orgId, role: UserRole.ORG_MANAGER },
+        select: { id: true },
+      });
+
+      for (const manager of managers) {
+        recipients.add(manager.id);
+      }
+    }
+
+    return Array.from(recipients);
   }
 
   async create(data: CreateAssignmentDto) {
@@ -130,17 +151,30 @@ export class AssignmentsService {
         status,
       },
       include: {
-        user: { select: { id: true, email: true } },
+        user: { select: { id: true, email: true, fullName: true } },
         workplace: {
-          select: { id: true, code: true, name: true, location: true },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            location: true,
+            orgId: true,
+            org: { select: { id: true, name: true, slug: true } },
+          },
         },
       },
     });
 
-    await this.createNotification(
+    const payload = this.buildNotificationPayload(assignment);
+    const recipients = await this.resolveRecipients(
       assignment.userId,
+      assignment.workplace.orgId,
+    );
+
+    await this.notifications.notifyMany(
+      recipients,
       NotificationType.ASSIGNMENT_CREATED,
-      this.buildNotificationPayload(assignment),
+      payload,
     );
 
     return assignment;
@@ -196,7 +230,14 @@ export class AssignmentsService {
       where: { id },
       include: {
         workplace: {
-          select: { id: true, code: true, name: true, location: true },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            location: true,
+            orgId: true,
+            org: { select: { id: true, name: true, slug: true } },
+          },
         },
       },
     });
@@ -231,7 +272,14 @@ export class AssignmentsService {
       include: {
         user: { select: { id: true, email: true, fullName: true } },
         workplace: {
-          select: { id: true, code: true, name: true, location: true },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            location: true,
+            orgId: true,
+            org: { select: { id: true, name: true, slug: true } },
+          },
         },
       },
     });
@@ -242,14 +290,24 @@ export class AssignmentsService {
       const cancelledPayload = this.buildNotificationPayload(existing);
       cancelledPayload.status = AssignmentStatus.ARCHIVED;
 
-      await this.createNotification(
+      const cancelledRecipients = await this.resolveRecipients(
         existing.userId,
+        existing.workplace.orgId,
+      );
+
+      await this.notifications.notifyMany(
+        cancelledRecipients,
         NotificationType.ASSIGNMENT_CANCELLED,
         cancelledPayload,
       );
 
-      await this.createNotification(
+      const createdRecipients = await this.resolveRecipients(
         updated.userId,
+        updated.workplace.orgId,
+      );
+
+      await this.notifications.notifyMany(
+        createdRecipients,
         NotificationType.ASSIGNMENT_CREATED,
         payload,
       );
@@ -271,7 +329,12 @@ export class AssignmentsService {
         type = NotificationType.ASSIGNMENT_MOVED;
       }
 
-      await this.createNotification(updated.userId, type, payload);
+      const recipients = await this.resolveRecipients(
+        updated.userId,
+        updated.workplace.orgId,
+      );
+
+      await this.notifications.notifyMany(recipients, type, payload);
     }
 
     return updated;

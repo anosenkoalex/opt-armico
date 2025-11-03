@@ -192,11 +192,6 @@ const MyPlace = () => {
                 t('assignments.workplace')
               )}
             </Descriptions.Item>
-            {currentWorkplace?.location ? (
-              <Descriptions.Item label={t('workplaces.location')}>
-                {currentWorkplace.location}
-              </Descriptions.Item>
-            ) : null}
             <Descriptions.Item label={t('myPlace.startsAt')}>
               {dayjs(currentAssignment.startsAt).format('DD.MM.YYYY HH:mm')}
             </Descriptions.Item>

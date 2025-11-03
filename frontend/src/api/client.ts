@@ -82,12 +82,26 @@ export type Notification = {
   readAt?: string | null;
 };
 
-export type AdminFeedItem = {
+export type FeedItemAction = 'created' | 'updated' | 'cancelled';
+
+export type FeedItemMeta = {
   id: string;
-  type: NotificationType;
-  createdAt: string;
-  payload: Record<string, unknown>;
-  user: Pick<User, 'id' | 'email' | 'fullName' | 'position'>;
+  action: FeedItemAction;
+  user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'> | null;
+  workplace?: { id: string; code: string; name: string };
+  org?: { id: string; name: string; slug: string } | null;
+  period?: { from: string; to: string | null };
+  status?: AssignmentStatus;
+  code?: string;
+  name?: string;
+  isActive?: boolean;
+};
+
+export type FeedItem = {
+  title: string;
+  type: 'assignment' | 'workplace';
+  at: string;
+  meta: FeedItemMeta;
 };
 
 export type PlanStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
@@ -130,6 +144,7 @@ export type User = {
   role: UserRole;
   orgId: string | null;
   org?: Org | null;
+  createdAt?: string;
 };
 
 export type MeProfile = {
@@ -230,9 +245,20 @@ export const fetchNotifications = async (take = 10) => {
   return data;
 };
 
-export const fetchAdminFeed = async (take = 20) => {
-  const { data } = await api.get<AdminFeedItem[]>(`/feed/admin`, {
-    params: { take },
+export const fetchAdminFeed = async (params?: {
+  take?: number;
+  userId?: string;
+  orgId?: string;
+}) => {
+  const { data } = await api.get<FeedItem[]>(`/feed/admin`, {
+    params,
+  });
+  return data;
+};
+
+export const fetchRecentFeed = async (params?: { take?: number; orgId?: string }) => {
+  const { data } = await api.get<FeedItem[]>(`/feed/recent`, {
+    params,
   });
   return data;
 };

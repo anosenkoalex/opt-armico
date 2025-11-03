@@ -8,11 +8,11 @@ generator client {
 }
 
 enum UserRole {
-  USER
-  AUDITOR
-  ORG_MANAGER
-  ADMIN
   SUPER_ADMIN
+  ADMIN
+  ORG_MANAGER
+  AUDITOR
+  USER
 }
 
 enum AssignmentStatus {
@@ -36,8 +36,8 @@ enum SlotStatus {
 enum NotificationType {
   ASSIGNMENT_CREATED
   ASSIGNMENT_UPDATED
-  ASSIGNMENT_MOVED
   ASSIGNMENT_CANCELLED
+  ASSIGNMENT_MOVED
 }
 
 model Org {

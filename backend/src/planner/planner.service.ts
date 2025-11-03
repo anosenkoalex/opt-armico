@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { AssignmentStatus, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { JwtPayload } from '../auth/jwt-payload.interface.js';
@@ -61,8 +61,15 @@ export class PlannerService {
     auth: JwtPayload,
     params: PlannerMatrixQuery,
   ): Promise<PlannerMatrixResponse> {
-    const isWorker = auth.role === UserRole.AUDITOR;
-    const effectiveUserId = isWorker ? auth.sub : params.userId;
+    const isAuditor = auth.role === UserRole.AUDITOR;
+    const isOrgManager = auth.role === UserRole.ORG_MANAGER;
+
+    if (isOrgManager && !auth.orgId) {
+      throw new NotFoundException('Пользователь не привязан к организации');
+    }
+
+    const effectiveUserId = isAuditor ? auth.sub : params.userId;
+    const effectiveOrgId = isOrgManager ? auth.orgId : params.orgId;
 
     const where: Prisma.AssignmentWhereInput = {
       startsAt: { lte: params.to },
@@ -71,8 +78,8 @@ export class PlannerService {
       ...(effectiveUserId ? { userId: effectiveUserId } : {}),
     };
 
-    if (params.orgId) {
-      where.workplace = { is: { orgId: params.orgId } };
+    if (effectiveOrgId) {
+      where.workplace = { is: { orgId: effectiveOrgId } };
     }
 
     const orderBy: Prisma.AssignmentOrderByWithRelationInput[] =

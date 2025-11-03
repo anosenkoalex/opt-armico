@@ -94,6 +94,8 @@ const AssignmentsPage = () => {
     mutationFn: createAssignment,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['assignments'] });
+      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
       message.success(t('assignments.created'));
       setIsModalOpen(false);
       setEditingAssignment(null);
@@ -122,6 +124,8 @@ const AssignmentsPage = () => {
     }) => updateAssignment(id, values),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['assignments'] });
+      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
       message.success(t('assignments.updated'));
       setIsModalOpen(false);
       setEditingAssignment(null);

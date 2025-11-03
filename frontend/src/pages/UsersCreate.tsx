@@ -12,7 +12,13 @@ import {
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
-const roleOptions: UserRole[] = ['AUDITOR', 'ORG_MANAGER', 'ADMIN'];
+const roleOptions: UserRole[] = [
+  'AUDITOR',
+  'ORG_MANAGER',
+  'ADMIN',
+  'SUPER_ADMIN',
+  'USER',
+];
 
 const UsersCreatePage = () => {
   const { t } = useTranslation();

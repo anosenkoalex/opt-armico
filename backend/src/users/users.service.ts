@@ -10,6 +10,17 @@ import { UpdateUserDto } from './dto/update-user.dto.js';
 import * as bcrypt from 'bcrypt';
 import { UserRole } from '@prisma/client';
 
+type SelectedUser = {
+  id: string;
+  email: string;
+  orgId: string | null;
+  fullName: string | null;
+  position: string | null;
+  role: UserRole;
+  createdAt: Date;
+  org: { id: string; name: string; slug: string } | null;
+};
+
 const DEFAULT_ADMIN_EMAIL = 'admin@armico.local';
 const DEFAULT_ADMIN_PASSWORD = 'admin123';
 const DEFAULT_ORG_SLUG = 'armico';
@@ -76,25 +87,30 @@ export class UsersService implements OnModuleInit {
 
     const org = await this.ensureOrg(data.orgId ?? null);
     const passwordHash = await bcrypt.hash(data.password, 10);
+    const position = data.position?.trim() ? data.position.trim() : null;
 
-    return this.prisma.user.create({
+    const created = await this.prisma.user.create({
       data: {
-        email: data.email,
+        email: data.email.trim(),
         password: passwordHash,
         role: data.role,
         orgId: org?.id ?? null,
-        fullName: data.fullName,
-        position: data.position ?? null,
+        fullName: data.fullName.trim(),
+        position,
       },
       select: this.baseSelect(),
     });
+
+    return this.presentUser(created);
   }
 
   findAll() {
-    return this.prisma.user.findMany({
-      select: this.baseSelect(),
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.prisma.user
+      .findMany({
+        select: this.baseSelect(),
+        orderBy: { createdAt: 'desc' },
+      })
+      .then((users) => users.map((user) => this.presentUser(user)));
   }
 
   async findOne(id: string) {
@@ -107,7 +123,7 @@ export class UsersService implements OnModuleInit {
       throw new NotFoundException('Пользователь не найден');
     }
 
-    return user;
+    return this.presentUser(user);
   }
 
   async update(id: string, data: UpdateUserDto) {
@@ -149,21 +165,25 @@ export class UsersService implements OnModuleInit {
       updateData.password = payload.password;
     }
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       data: updateData,
       select: this.baseSelect(),
     });
+
+    return this.presentUser(updated);
   }
 
   async remove(id: string) {
     await this.findOne(id);
     await this.prisma.notification.deleteMany({ where: { userId: id } });
     await this.prisma.assignment.deleteMany({ where: { userId: id } });
-    return this.prisma.user.delete({
+    const deleted = await this.prisma.user.delete({
       where: { id },
       select: this.baseSelect(),
     });
+
+    return this.presentUser(deleted);
   }
 
   async getProfile(id: string) {
@@ -212,5 +232,24 @@ export class UsersService implements OnModuleInit {
         },
       },
     } as const;
+  }
+
+  private presentUser(user: SelectedUser) {
+    return {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName ?? null,
+      position: user.position ?? null,
+      role: user.role,
+      orgId: user.orgId,
+      createdAt: user.createdAt.toISOString(),
+      org: user.org
+        ? {
+            id: user.org.id,
+            name: user.org.name,
+            slug: user.org.slug,
+          }
+        : null,
+    };
   }
 }

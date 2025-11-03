@@ -749,7 +749,11 @@ export class PlansService {
     return this.prisma.$transaction(actions);
   }
 
-  private async notifyUsers(userIds: string[], type: NotificationType, payload: Record<string, unknown>) {
+  private async notifyUsers(
+    userIds: string[],
+    type: NotificationType,
+    payload: Prisma.JsonObject,
+  ) {
     const uniqueIds = [...new Set(userIds)].filter(Boolean);
 
     if (uniqueIds.length === 0) {

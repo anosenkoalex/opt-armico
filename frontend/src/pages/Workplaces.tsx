@@ -77,6 +77,7 @@ const WorkplacesPage = () => {
     mutationFn: createWorkplace,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workplaces'] });
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
       message.success(t('workplaces.created'));
       setIsModalOpen(false);
       form.resetFields();
@@ -98,6 +99,7 @@ const WorkplacesPage = () => {
     }) => updateWorkplace(id, values),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workplaces'] });
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
       message.success(t('workplaces.updated'));
       setIsModalOpen(false);
       setEditingWorkplace(null);

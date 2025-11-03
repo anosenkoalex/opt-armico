@@ -48,7 +48,7 @@ const clampIndex = (value: number, max: number) => {
 
 const PlannerPage = () => {
   const { t } = useTranslation();
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [mode, setMode] = useState<Mode>('byUsers');
   const [page, setPage] = useState(1);
   const [range, setRange] = useState<[Dayjs, Dayjs]>([
@@ -60,16 +60,20 @@ const PlannerPage = () => {
   const role = user?.role ?? 'USER';
   const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
   const isAuditor = role === 'AUDITOR';
-  const canView = isAdmin || isAuditor;
+  const isOrgManager = role === 'ORG_MANAGER';
+  const canView = isAdmin || isAuditor || isOrgManager;
+  const canPaginate = isAdmin || isOrgManager;
 
   const query = useQuery<PlannerMatrixResponse>({
     queryKey: [
       'planner-matrix',
       mode,
-      page,
+      canPaginate ? page : 1,
       range[0]?.toISOString(),
       range[1]?.toISOString(),
       role,
+      profile?.org?.id ?? null,
+      user?.id ?? null,
     ],
     queryFn: async () => {
       const [fromRaw, toRaw] = range;
@@ -82,9 +86,19 @@ const PlannerPage = () => {
         mode,
         from: fromRaw.startOf('day').toISOString(),
         to: toRaw.endOf('day').toISOString(),
-        page: isAdmin ? page : 1,
-        pageSize: isAdmin ? pageSize : undefined,
-      } as const;
+        page: canPaginate ? page : 1,
+        pageSize: canPaginate ? pageSize : undefined,
+        userId: undefined as string | undefined,
+        orgId: undefined as string | undefined,
+      };
+
+      if (isAuditor && user?.id) {
+        params.userId = user.id;
+      }
+
+      if (isOrgManager && profile?.org?.id) {
+        params.orgId = profile.org.id;
+      }
 
       return fetchPlannerMatrix(params);
     },
@@ -303,7 +317,7 @@ const PlannerPage = () => {
           </div>
         )}
 
-        {isAdmin && query.data ? (
+        {canPaginate && query.data ? (
           <Flex justify="end" className="mt-4">
             <Pagination
               current={page}
