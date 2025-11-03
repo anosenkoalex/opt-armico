@@ -29,13 +29,13 @@ export class OrgsController {
   }
 
   @Get()
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   findAll() {
     return this.orgsService.findAll();
   }
 
   @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   findOne(@Param('id') id: string) {
     return this.orgsService.findOne(id);
   }

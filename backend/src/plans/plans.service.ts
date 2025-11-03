@@ -4,7 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { NotificationType, Plan, PlanStatus, Prisma, SlotStatus } from '@prisma/client';
+import {
+  NotificationType,
+  Plan,
+  PlanStatus,
+  Prisma,
+  SlotStatus,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { AutoAssignDto } from './dto/auto-assign.dto.js';
@@ -208,7 +215,7 @@ export class PlansService {
 
     const users = await this.prisma.user.findMany({
       where: {
-        role: { not: 'SUPER_ADMIN' },
+        role: UserRole.USER,
       },
       select: { id: true },
     });
@@ -678,7 +685,7 @@ export class PlansService {
 
     const admins = await this.prisma.user.findMany({
       where: {
-        role: { in: ['ADMIN', 'SUPER_ADMIN'] },
+        role: UserRole.SUPER_ADMIN,
       },
       select: { id: true },
     });

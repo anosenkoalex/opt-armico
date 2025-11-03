@@ -61,15 +61,14 @@ export class PlannerService {
     auth: JwtPayload,
     params: PlannerMatrixQuery,
   ): Promise<PlannerMatrixResponse> {
-    const isAuditor = auth.role === UserRole.AUDITOR;
-    const isOrgManager = auth.role === UserRole.ORG_MANAGER;
+    const isSuperAdmin = auth.role === UserRole.SUPER_ADMIN;
 
-    if (isOrgManager && !auth.orgId) {
+    if (!isSuperAdmin && params.mode === 'byOrgs' && !auth.orgId) {
       throw new NotFoundException('Пользователь не привязан к организации');
     }
 
-    const effectiveUserId = isAuditor ? auth.sub : params.userId;
-    const effectiveOrgId = isOrgManager ? auth.orgId : params.orgId;
+    const effectiveUserId = isSuperAdmin ? params.userId : auth.sub;
+    const effectiveOrgId = isSuperAdmin ? params.orgId : auth.orgId;
 
     const where: Prisma.AssignmentWhereInput = {
       startsAt: { lte: params.to },
@@ -128,17 +127,17 @@ export class PlannerService {
       };
 
       if (params.mode === 'byOrgs') {
+        const orgId = assignment.workplace.orgId;
         const org = assignment.workplace.org;
-        if (!org) {
-          continue;
-        }
+        const key = orgId;
+        const title = org?.name?.trim() ? org.name : 'Без названия';
 
-        const existing = groups.get(org.id);
+        const existing = groups.get(key);
 
         if (!existing) {
-          groups.set(org.id, {
-            key: org.id,
-            title: org.name,
+          groups.set(key, {
+            key,
+            title,
             slots: [slot],
           });
         } else {

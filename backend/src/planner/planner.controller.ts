@@ -33,12 +33,7 @@ export class PlannerController {
   constructor(private readonly plannerService: PlannerService) {}
 
   @Get('matrix')
-  @Roles(
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.AUDITOR,
-    UserRole.ORG_MANAGER,
-  )
+  @Roles(UserRole.SUPER_ADMIN, UserRole.USER)
   getMatrix(
     @CurrentUser() user: JwtPayload,
     @Query(new ZodValidationPipe(plannerMatrixSchema)) query: PlannerMatrixDto,

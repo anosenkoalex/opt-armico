@@ -117,15 +117,13 @@ export class AssignmentsService {
   ): Promise<string[]> {
     const recipients = new Set<string>([userId]);
 
-    if (orgId) {
-      const managers = await this.prisma.user.findMany({
-        where: { orgId, role: UserRole.ORG_MANAGER },
-        select: { id: true },
-      });
+    const superAdmins = await this.prisma.user.findMany({
+      where: { role: UserRole.SUPER_ADMIN },
+      select: { id: true },
+    });
 
-      for (const manager of managers) {
-        recipients.add(manager.id);
-      }
+    for (const admin of superAdmins) {
+      recipients.add(admin.id);
     }
 
     return Array.from(recipients);

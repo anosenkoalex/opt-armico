@@ -12,13 +12,7 @@ import {
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
-const roleOptions: UserRole[] = [
-  'AUDITOR',
-  'ORG_MANAGER',
-  'ADMIN',
-  'SUPER_ADMIN',
-  'USER',
-];
+const roleOptions: UserRole[] = ['USER', 'SUPER_ADMIN'];
 
 const UsersCreatePage = () => {
   const { t } = useTranslation();
@@ -27,7 +21,7 @@ const UsersCreatePage = () => {
   const [form] = Form.useForm();
   const { user } = useAuth();
 
-  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const isAdmin = user?.role === 'SUPER_ADMIN';
 
   const orgsQuery = useQuery({
     queryKey: ['orgs'],
@@ -70,14 +64,13 @@ const UsersCreatePage = () => {
         form={form}
         layout="vertical"
         className="mt-4 max-w-xl"
-        initialValues={{ role: 'AUDITOR' as UserRole }}
+        initialValues={{ role: 'USER' as UserRole }}
         onFinish={(values: {
           fullName: string;
           email: string;
           password: string;
           role: UserRole;
           orgId?: string;
-          position?: string;
         }) => {
           mutation.mutate({
             fullName: values.fullName,
@@ -85,7 +78,6 @@ const UsersCreatePage = () => {
             password: values.password,
             role: values.role,
             orgId: values.orgId || undefined,
-            position: values.position || undefined,
           });
         }}
       >
@@ -132,9 +124,6 @@ const UsersCreatePage = () => {
             options={orgOptions}
             placeholder={t('users.noOrg')}
           />
-        </Form.Item>
-        <Form.Item name="position" label={t('users.position')}>
-          <Input />
         </Form.Item>
         <Form.Item>
           <Button

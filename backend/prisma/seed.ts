@@ -1,9 +1,4 @@
-import {
-  AssignmentStatus,
-  NotificationType,
-  PrismaClient,
-  UserRole,
-} from '@prisma/client';
+import { AssignmentStatus, PrismaClient, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
@@ -28,34 +23,9 @@ async function main() {
       password: await bcrypt.hash('admin123', 10),
       role: UserRole.SUPER_ADMIN,
       fullName: 'System Administrator',
-      position: 'Administrator',
       orgId: org.id,
     },
   });
-
-  const [olga, dmitry] = await Promise.all([
-    prisma.user.create({
-      data: {
-        email: 'olga@armico.local',
-        password: await bcrypt.hash('password123', 10),
-        role: UserRole.USER,
-        fullName: 'Ольга Смирнова',
-        position: 'HR specialist',
-        orgId: org.id,
-      },
-    }),
-    prisma.user.create({
-      data: {
-        email: 'dmitry@armico.local',
-        password: await bcrypt.hash('password123', 10),
-        role: UserRole.USER,
-        fullName: 'Дмитрий Иванов',
-        position: 'Support engineer',
-        orgId: org.id,
-      },
-    }),
-  ]);
-
   const [hq, support] = await Promise.all([
     prisma.workplace.create({
       data: {
@@ -77,53 +47,14 @@ async function main() {
     }),
   ]);
 
-  const assignment = await prisma.assignment.create({
+  await prisma.assignment.create({
     data: {
-      userId: olga.id,
+      userId: admin.id,
       workplaceId: hq.id,
       startsAt: new Date(),
       endsAt: null,
       status: AssignmentStatus.ACTIVE,
     },
-  });
-
-  await prisma.assignment.create({
-    data: {
-      userId: dmitry.id,
-      workplaceId: support.id,
-      startsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      endsAt: null,
-      status: AssignmentStatus.ACTIVE,
-    },
-  });
-
-  await prisma.notification.createMany({
-    data: [
-      {
-        userId: admin.id,
-        type: NotificationType.ASSIGNMENT_CREATED,
-        payload: {
-          assignmentId: assignment.id,
-          workplaceCode: hq.code,
-          workplaceName: hq.name,
-          startsAt: assignment.startsAt,
-          endsAt: assignment.endsAt,
-          status: assignment.status,
-        },
-      },
-      {
-        userId: olga.id,
-        type: NotificationType.ASSIGNMENT_CREATED,
-        payload: {
-          assignmentId: assignment.id,
-          workplaceCode: hq.code,
-          workplaceName: hq.name,
-          startsAt: assignment.startsAt,
-          endsAt: assignment.endsAt,
-          status: assignment.status,
-        },
-      },
-    ],
   });
 
   console.log('Database has been seeded');

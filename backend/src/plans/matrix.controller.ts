@@ -9,7 +9,7 @@ import { MatrixQueryDto, matrixQuerySchema } from './dto/matrix-query.dto.js';
 
 @Controller('matrix')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+@Roles(UserRole.SUPER_ADMIN)
 export class MatrixController {
   constructor(private readonly plansService: PlansService) {}
 

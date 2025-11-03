@@ -13,7 +13,7 @@ export class FeedController {
   constructor(private readonly feedService: FeedService) {}
 
   @Get('admin')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   getAdminFeed(
     @Query('take') take?: string,
     @Query('userId') userId?: string,
@@ -25,12 +25,7 @@ export class FeedController {
   }
 
   @Get('recent')
-  @Roles(
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.AUDITOR,
-    UserRole.ORG_MANAGER,
-  )
+  @Roles(UserRole.SUPER_ADMIN, UserRole.USER)
   getRecentFeed(
     @CurrentUser() user: JwtPayload,
     @Query('take') take?: string,
@@ -39,15 +34,10 @@ export class FeedController {
     const parsed = Number.parseInt(take ?? '', 10);
     const limit = Number.isNaN(parsed) ? 20 : parsed;
 
-    if (user.role === UserRole.AUDITOR) {
-      return this.feedService.getScopedFeed({ take: limit, userId: user.sub });
+    if (user.role === UserRole.SUPER_ADMIN) {
+      return this.feedService.getScopedFeed({ take: limit, orgId });
     }
 
-    if (user.role === UserRole.ORG_MANAGER) {
-      const effectiveOrgId = orgId ?? user.orgId ?? undefined;
-      return this.feedService.getScopedFeed({ take: limit, orgId: effectiveOrgId });
-    }
-
-    return this.feedService.getScopedFeed({ take: limit });
+    return this.feedService.getScopedFeed({ take: limit, userId: user.sub });
   }
 }

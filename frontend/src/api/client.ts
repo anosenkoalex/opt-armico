@@ -1,11 +1,6 @@
 import axios from 'axios';
 
-export type UserRole =
-  | 'USER'
-  | 'AUDITOR'
-  | 'ORG_MANAGER'
-  | 'ADMIN'
-  | 'SUPER_ADMIN';
+export type UserRole = 'USER' | 'SUPER_ADMIN';
 
 export type JwtPayload = {
   sub: string;
@@ -359,7 +354,6 @@ export const createUser = async (payload: {
   password: string;
   role: UserRole;
   orgId?: string;
-  position?: string;
 }) => {
   const { data } = await api.post<User>('/users', payload);
   return data;

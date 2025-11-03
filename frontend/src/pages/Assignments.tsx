@@ -53,7 +53,7 @@ const AssignmentsPage = () => {
   );
   const [form] = Form.useForm();
 
-  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const isAdmin = user?.role === 'SUPER_ADMIN';
 
   const assignmentsQuery = useQuery<PaginatedResponse<Assignment>>({
     queryKey: [
@@ -90,6 +90,30 @@ const AssignmentsPage = () => {
     enabled: isAdmin,
   });
 
+  const handleAssignmentError = (error: unknown) => {
+    const axiosError = error as AxiosError<{ message?: string | string[] }>;
+    const msg = axiosError?.response?.data?.message;
+
+    if (typeof msg === 'string') {
+      const normalized = msg.toLowerCase();
+
+      if (normalized.includes('overlap') || normalized.includes('пересек')) {
+        message.error(t('assignments.overlapError'));
+        return;
+      }
+
+      message.error(msg);
+      return;
+    }
+
+    if (Array.isArray(msg)) {
+      message.error(msg.join('\n'));
+      return;
+    }
+
+    message.error(msg ?? t('common.error'));
+  };
+
   const createMutation = useMutation({
     mutationFn: createAssignment,
     onSuccess: () => {
@@ -102,15 +126,7 @@ const AssignmentsPage = () => {
       form.resetFields();
     },
     onError: (error: unknown) => {
-      const axiosError = error as AxiosError<{
-        code?: string;
-        message?: string;
-      }>;
-      if (axiosError.response?.data?.code === 'ASSIGNMENT_OVERLAP') {
-        message.error(t('assignments.overlapError'));
-        return;
-      }
-      message.error(t('common.error'));
+      handleAssignmentError(error);
     },
   });
 
@@ -132,15 +148,7 @@ const AssignmentsPage = () => {
       form.resetFields();
     },
     onError: (error: unknown) => {
-      const axiosError = error as AxiosError<{
-        code?: string;
-        message?: string;
-      }>;
-      if (axiosError.response?.data?.code === 'ASSIGNMENT_OVERLAP') {
-        message.error(t('assignments.overlapError'));
-        return;
-      }
-      message.error(t('common.error'));
+      handleAssignmentError(error);
     },
   });
 

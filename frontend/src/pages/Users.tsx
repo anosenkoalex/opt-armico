@@ -12,7 +12,7 @@ const UsersPage = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const isAdmin = user?.role === 'SUPER_ADMIN';
 
   const usersQuery = useQuery({
     queryKey: ['users'],

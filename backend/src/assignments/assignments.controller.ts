@@ -33,7 +33,7 @@ export class AssignmentsController {
   constructor(private readonly assignmentsService: AssignmentsService) {}
 
   @Post()
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   create(
     @Body(new ZodValidationPipe(createAssignmentSchema))
     payload: CreateAssignmentDto,
@@ -42,7 +42,7 @@ export class AssignmentsController {
   }
 
   @Get()
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   findAll(
     @Query(new ZodValidationPipe(listAssignmentsSchema))
     query: ListAssignmentsDto,
@@ -51,13 +51,13 @@ export class AssignmentsController {
   }
 
   @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   findOne(@Param('id') id: string) {
     return this.assignmentsService.findOne(id);
   }
 
   @Patch(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.SUPER_ADMIN)
   update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateAssignmentSchema))

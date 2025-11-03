@@ -51,7 +51,14 @@ export class AuthService {
     };
   }
 
-  async register({ email, password, orgId, fullName, position }: RegisterDto) {
+  async register({
+    email,
+    password,
+    orgId,
+    fullName,
+    position,
+    role,
+  }: RegisterDto) {
     const existing = await this.prisma.user.findUnique({ where: { email } });
 
     if (existing) {
@@ -82,7 +89,7 @@ export class AuthService {
         orgId: org?.id ?? null,
         fullName: fullName ?? null,
         position: position ?? null,
-        role: UserRole.USER,
+        role: role ?? UserRole.USER,
       },
     });
 
