@@ -17,19 +17,19 @@ const Dashboard = () => {
   const { profile, user } = useAuth();
 
   const role = user?.role ?? 'USER';
-  const isSuperAdmin = role === 'SUPER_ADMIN';
+  const isAdmin = role === 'SUPER_ADMIN';
 
   const currentWorkplaceQuery = useQuery({
     queryKey: ['me', 'current-workplace', 'dashboard'],
     queryFn: fetchCurrentWorkplace,
     refetchInterval: 60_000,
-    enabled: !isSuperAdmin,
+    enabled: !isAdmin,
   });
 
   const feedQuery = useQuery({
     queryKey: [
       'feed',
-      isSuperAdmin ? 'admin' : 'recent',
+      isAdmin ? 'admin' : 'recent',
       role,
       profile?.org?.id ?? null,
       user?.id ?? null,
@@ -37,7 +37,7 @@ const Dashboard = () => {
     queryFn: () => {
       const take = 20;
 
-      if (isSuperAdmin) {
+      if (isAdmin) {
         return fetchAdminFeed({ take });
       }
 
@@ -50,7 +50,7 @@ const Dashboard = () => {
   const scheduleQuery = useQuery({
     queryKey: ['me', 'schedule', 'dashboard'],
     queryFn: fetchMySchedule,
-    enabled: !isSuperAdmin,
+    enabled: !isAdmin,
     refetchInterval: 120_000,
   });
 
@@ -182,7 +182,7 @@ const Dashboard = () => {
         })}
       </Typography.Title>
 
-      {!isSuperAdmin ? (
+      {!isAdmin ? (
         <Card title={t('dashboard.currentAssignmentTitle')}>
           {currentWorkplaceQuery.isLoading ? (
             <Flex justify="center">
