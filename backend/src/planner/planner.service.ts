@@ -121,6 +121,26 @@ export class PlannerService {
       { header: 'Статус', key: 'status', width: 20 },
     ];
 
+    const dateFormatter = new Intl.DateTimeFormat('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+
+    const periodLabel = `Период: ${dateFormatter.format(params.from)} — ${dateFormatter.format(
+      params.to,
+    )}`;
+
+    sheet.spliceRows(1, 0, []);
+    sheet.mergeCells(1, 1, 1, sheet.columnCount);
+    const periodCell = sheet.getCell(1, 1);
+    periodCell.value = periodLabel;
+    periodCell.font = { bold: true };
+
+    const headerRow = sheet.getRow(2);
+    headerRow.font = { bold: true };
+    sheet.views = [{ state: 'frozen', ySplit: 2 }];
+
     for (const row of rows) {
       for (const slot of row.slots) {
         const employeeName = slot.user?.fullName?.trim()
@@ -134,13 +154,15 @@ export class PlannerService {
 
         const startsAt = slot.from ? new Date(slot.from) : undefined;
         const endsAt = slot.to ? new Date(slot.to) : null;
+        const statusLabel =
+          slot.status === AssignmentStatus.ACTIVE ? 'Активно' : 'Архив';
 
         sheet.addRow({
           employee: employeeName,
           workplace: workplaceLabel,
           startsAt,
-          endsAt,
-          status: slot.status,
+          endsAt: endsAt ?? 'бессрочно',
+          status: statusLabel,
         });
       }
     }
@@ -207,7 +229,15 @@ export class PlannerService {
       orderBy,
     });
 
-    const groups = new Map<string, PlannerMatrixRow>();
+    const workplaceSlots = new Map<string, PlannerMatrixSlot[]>();
+    const workplaceMeta = new Map<
+      string,
+      { code: string; name: string | null; location: string | null }
+    >();
+    const userGroups = new Map<
+      string,
+      { title: string; subtitle?: string; slots: PlannerMatrixSlot[] }
+    >();
 
     for (const assignment of assignments) {
       const slot: PlannerMatrixSlot = {
@@ -227,50 +257,112 @@ export class PlannerService {
         },
       };
 
-      if (params.mode === 'byWorkplaces') {
-        const workplace = assignment.workplace;
-        const key = workplace.id;
-        const namePart = workplace.name?.trim();
-        const codePart = workplace.code?.trim();
-        const title = [codePart, namePart].filter(Boolean).join(' — ');
-        const subtitle = workplace.location?.trim();
+      const workplaceId = assignment.workplace.id;
+      workplaceMeta.set(workplaceId, {
+        code: assignment.workplace.code,
+        name: assignment.workplace.name,
+        location: assignment.workplace.location ?? null,
+      });
 
-        const existing = groups.get(key);
-
-        if (!existing) {
-          groups.set(key, {
-            key,
-            title: title || codePart || namePart || 'Рабочее место',
-            subtitle: subtitle || undefined,
-            slots: [slot],
-          });
-        } else {
-          existing.slots.push(slot);
-        }
+      const workplaceList = workplaceSlots.get(workplaceId);
+      if (workplaceList) {
+        workplaceList.push(slot);
       } else {
-        const user = assignment.user;
-        const key = user?.id ?? assignment.userId;
-        const title = user?.fullName ?? user?.email ?? assignment.userId;
-        const subtitle = user?.position ?? '';
+        workplaceSlots.set(workplaceId, [slot]);
+      }
 
-        const existing = groups.get(key);
+      const user = assignment.user;
+      const userKey = user?.id ?? assignment.userId;
+      const userTitle = user?.fullName?.trim()
+        ? user.fullName
+        : user?.email ?? assignment.userId;
+      const userSubtitle = user?.position ?? undefined;
 
-        if (!existing) {
-          groups.set(key, {
-            key,
-            title,
-            subtitle: subtitle || undefined,
-            slots: [slot],
-          });
-        } else {
-          existing.slots.push(slot);
-        }
+      const userGroup = userGroups.get(userKey);
+
+      if (userGroup) {
+        userGroup.slots.push(slot);
+      } else {
+        userGroups.set(userKey, {
+          title: userTitle,
+          subtitle: userSubtitle || undefined,
+          slots: [slot],
+        });
       }
     }
 
-    return Array.from(groups.values())
-      .map((group) => ({
-        ...group,
+    if (params.mode === 'byWorkplaces') {
+      const workplaceIds = Array.from(workplaceSlots.keys());
+      const workplaceWhere: Prisma.WorkplaceWhereInput = {};
+
+      if (workplaceIds.length > 0) {
+        workplaceWhere.id = { in: workplaceIds };
+      } else if (!effectiveOrgId) {
+        return [];
+      }
+
+      if (effectiveOrgId) {
+        workplaceWhere.orgId = effectiveOrgId;
+      }
+
+      const workplaces = await this.prisma.workplace.findMany({
+        where: workplaceWhere,
+        select: { id: true, code: true, name: true, location: true },
+        orderBy: [{ code: 'asc' }, { name: 'asc' }],
+      });
+
+      const rows: PlannerMatrixRow[] = workplaces.map((workplace) => {
+        const meta = workplaceMeta.get(workplace.id) ?? workplace;
+        const titleParts = [meta.code?.trim(), meta.name?.trim()].filter(Boolean);
+        const subtitle = meta.location?.trim() ?? undefined;
+        const slots = workplaceSlots.get(workplace.id) ?? [];
+
+        return {
+          key: workplace.id,
+          title:
+            titleParts.length > 0
+              ? titleParts.join(' — ')
+              : meta.code || meta.name || 'Рабочее место',
+          subtitle,
+          slots: slots.sort((a, b) => a.from.localeCompare(b.from)),
+        };
+      });
+
+      if (rows.length > 0) {
+        return rows.sort((a, b) =>
+          a.title.localeCompare(b.title, 'ru', { numeric: true }),
+        );
+      }
+
+      return workplaceIds
+        .map((id) => {
+          const meta = workplaceMeta.get(id);
+          if (!meta) {
+            return null;
+          }
+
+          const titleParts = [meta.code?.trim(), meta.name?.trim()].filter(Boolean);
+          const slots = workplaceSlots.get(id) ?? [];
+
+          return {
+            key: id,
+            title:
+              titleParts.length > 0
+                ? titleParts.join(' — ')
+                : meta.code || meta.name || 'Рабочее место',
+            subtitle: meta.location?.trim() ?? undefined,
+            slots: slots.sort((a, b) => a.from.localeCompare(b.from)),
+          } satisfies PlannerMatrixRow;
+        })
+        .filter((row): row is PlannerMatrixRow => Boolean(row))
+        .sort((a, b) => a.title.localeCompare(b.title, 'ru', { numeric: true }));
+    }
+
+    return Array.from(userGroups.entries())
+      .map(([key, group]) => ({
+        key,
+        title: group.title,
+        subtitle: group.subtitle,
         slots: group.slots.sort((a, b) => a.from.localeCompare(b.from)),
       }))
       .sort((a, b) => a.title.localeCompare(b.title, 'ru', { numeric: true }));

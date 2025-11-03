@@ -65,4 +65,10 @@ export class AssignmentsController {
   ) {
     return this.assignmentsService.update(id, payload);
   }
+
+  @Post(':id/notify')
+  @Roles(UserRole.SUPER_ADMIN)
+  notify(@Param('id') id: string) {
+    return this.assignmentsService.notify(id);
+  }
 }

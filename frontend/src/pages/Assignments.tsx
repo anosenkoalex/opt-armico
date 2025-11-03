@@ -6,6 +6,7 @@ import {
   Modal,
   Result,
   Select,
+  Space,
   Switch,
   Table,
   Tag,
@@ -29,6 +30,7 @@ import {
   fetchAssignments,
   fetchUsers,
   fetchWorkplaces,
+  notifyAssignment,
   updateAssignment,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
@@ -51,6 +53,7 @@ const AssignmentsPage = () => {
   const [editingAssignment, setEditingAssignment] = useState<Assignment | null>(
     null,
   );
+  const [notifyingId, setNotifyingId] = useState<string | null>(null);
   const [form] = Form.useForm();
 
   const isAdmin = user?.role === 'SUPER_ADMIN';
@@ -152,6 +155,33 @@ const AssignmentsPage = () => {
     },
   });
 
+  const notifyMutation = useMutation({
+    mutationFn: (assignmentId: string) => notifyAssignment(assignmentId),
+    onMutate: (assignmentId: string) => {
+      setNotifyingId(assignmentId);
+    },
+    onSuccess: () => {
+      message.success(t('assignments.notifySuccess'));
+    },
+    onError: (error: unknown) => {
+      const axiosError = error as AxiosError<{ message?: string } | string>;
+      const responseMessage =
+        typeof axiosError?.response?.data === 'string'
+          ? axiosError.response.data
+          : axiosError?.response?.data?.message;
+
+      if (typeof responseMessage === 'string' && responseMessage.trim()) {
+        message.error(responseMessage);
+        return;
+      }
+
+      message.error(t('assignments.notifyError'));
+    },
+    onSettled: () => {
+      setNotifyingId(null);
+    },
+  });
+
   const columns: ColumnsType<Assignment> = useMemo(
     () => [
       {
@@ -200,30 +230,79 @@ const AssignmentsPage = () => {
       {
         title: t('workplaces.actions'),
         key: 'actions',
-        render: (_value, record) => (
-          <Button
-            type="link"
-            onClick={() => {
-              setEditingAssignment(record);
-              form.setFieldsValue({
-                userId: record.userId,
-                workplaceId: record.workplaceId,
-                status: record.status,
-                period: [
-                  dayjs(record.startsAt),
-                  record.endsAt ? dayjs(record.endsAt) : null,
-                ],
-                isOpenEnded: !record.endsAt,
-              });
-              setIsModalOpen(true);
-            }}
-          >
-            {t('common.edit')}
-          </Button>
-        ),
+        render: (_value, record) => {
+          const canNotify =
+            record.status === 'ACTIVE' && Boolean(record.user?.email);
+
+          return (
+            <Space size="small">
+              <Button
+                type="link"
+                onClick={() => {
+                  setEditingAssignment(record);
+                  form.setFieldsValue({
+                    userId: record.userId,
+                    workplaceId: record.workplaceId,
+                    status: record.status,
+                    period: [
+                      dayjs(record.startsAt),
+                      record.endsAt ? dayjs(record.endsAt) : null,
+                    ],
+                    isOpenEnded: !record.endsAt,
+                  });
+                  setIsModalOpen(true);
+                }}
+              >
+                {t('common.edit')}
+              </Button>
+              <Button
+                type="link"
+                disabled={!canNotify}
+                loading={
+                  notifyMutation.isPending && notifyingId === record.id
+                }
+                onClick={() => {
+                  if (!canNotify) {
+                    return;
+                  }
+
+                  const workplaceLabel = record.workplace
+                    ? `${record.workplace.code} — ${record.workplace.name}`
+                    : '';
+                  const employeeName =
+                    record.user?.fullName ?? record.user?.email ?? '';
+
+                  Modal.confirm({
+                    title: t('assignments.notifyConfirmTitle'),
+                    content: t('assignments.notifyConfirmDescription', {
+                      user: employeeName,
+                      workplace: workplaceLabel,
+                    }),
+                    okText: t('assignments.notifyConfirmOk'),
+                    cancelText: t('common.cancel'),
+                    centered: true,
+                    onOk: () =>
+                      notifyMutation
+                        .mutateAsync(record.id)
+                        .catch(() => undefined),
+                  });
+                }}
+              >
+                {t('assignments.notify')}
+              </Button>
+            </Space>
+          );
+        },
       },
     ],
-    [form, t],
+    [
+      form,
+      notifyMutation,
+      notifyingId,
+      setEditingAssignment,
+      setIsModalOpen,
+      t,
+    ],
   );
 
   const handleModalOk = async () => {

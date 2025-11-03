@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -14,12 +15,14 @@ import { CreateAssignmentDto } from './dto/create-assignment.dto.js';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto.js';
 import { ListAssignmentsDto } from './dto/list-assignments.dto.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
+import { EmailService } from '../notifications/email.service.js';
 
 @Injectable()
 export class AssignmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly email: EmailService,
   ) {}
 
   private buildWhere(params: ListAssignmentsDto): Prisma.AssignmentWhereInput {
@@ -176,6 +179,43 @@ export class AssignmentsService {
     );
 
     return assignment;
+  }
+
+  async notify(id: string) {
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: { id: true, email: true, fullName: true },
+        },
+        workplace: {
+          select: { id: true, code: true, name: true },
+        },
+      },
+    });
+
+    if (!assignment) {
+      throw new NotFoundException('Назначение не найдено');
+    }
+
+    if (!assignment.user?.email) {
+      throw new BadRequestException('У сотрудника не указан email');
+    }
+
+    if (assignment.status !== AssignmentStatus.ACTIVE) {
+      throw new BadRequestException('Назначение не активно');
+    }
+
+    await this.email.sendAssignmentNotification({
+      email: assignment.user.email,
+      fullName: assignment.user.fullName ?? null,
+      workplaceCode: assignment.workplace.code,
+      workplaceName: assignment.workplace.name ?? null,
+      startsAt: assignment.startsAt,
+      endsAt: assignment.endsAt ?? null,
+    });
+
+    return { success: true } as const;
   }
 
   async findAll(params: ListAssignmentsDto) {

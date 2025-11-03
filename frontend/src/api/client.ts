@@ -348,6 +348,10 @@ export const updateAssignment = async (
   return data;
 };
 
+export const notifyAssignment = async (id: string) => {
+  await api.post(`/assignments/${id}/notify`);
+};
+
 export const fetchUsers = async () => {
   const { data } = await api.get<User[]>('/users');
   return data;

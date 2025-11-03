@@ -76,6 +76,13 @@ void i18n.use(initReactI18next).init({
           created: 'Назначение создано',
           updated: 'Назначение обновлено',
           overlapError: 'Назначение пересекается по времени.',
+          notify: 'Оповестить',
+          notifySuccess: 'Уведомление отправлено',
+          notifyError: 'Не удалось отправить уведомление',
+          notifyConfirmTitle: 'Оповестить сотрудника?',
+          notifyConfirmDescription:
+            'Отправить уведомление для {{user}} о назначении на {{workplace}}?',
+          notifyConfirmOk: 'Отправить',
           user: 'Сотрудник',
           workplace: 'Рабочее место',
           timeframe: 'Интервал',
