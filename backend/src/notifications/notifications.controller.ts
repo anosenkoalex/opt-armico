@@ -10,16 +10,18 @@ export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
   @Get('me')
-  findMyNotifications(
+  async findMyNotifications(
     @CurrentUser() user: JwtPayload,
     @Query('take') take?: string,
     @Query('limit') legacyLimit?: string,
   ) {
-    const raw = take ?? legacyLimit ?? '';
-    const parsedLimit = Number(raw);
-    const take = Number.isNaN(parsedLimit)
-      ? 20
-      : Math.min(Math.max(parsedLimit, 1), 50);
-    return this.notificationsService.findForUser(user.sub, take);
+    const raw = take ?? legacyLimit;
+    const parsedLimit = raw ? Number(raw) : NaN;
+    const limit: number | undefined =
+      Number.isNaN(parsedLimit) || parsedLimit <= 0
+        ? undefined
+        : Math.min(parsedLimit, 50);
+
+    return this.notificationsService.findForUser(user.sub, limit);
   }
 }

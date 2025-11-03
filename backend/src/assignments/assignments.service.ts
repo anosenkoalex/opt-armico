@@ -312,7 +312,7 @@ export class AssignmentsService {
         payload,
       );
     } else {
-      let type = NotificationType.ASSIGNMENT_UPDATED;
+      let type: NotificationType = NotificationType.ASSIGNMENT_UPDATED;
 
       if (existing.status !== updated.status) {
         if (updated.status === AssignmentStatus.ARCHIVED) {

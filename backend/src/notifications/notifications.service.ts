@@ -6,11 +6,11 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 export class NotificationsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findForUser(userId: string, take = 20) {
+  findForUser(userId: string, take?: number) {
     return this.prisma.notification.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      take,
+      take: take ?? 20,
     });
   }
 
