@@ -7,6 +7,7 @@ import AssignmentsPage from '../pages/Assignments.js';
 import PlannerPage from '../pages/Planner.js';
 import UsersPage from '../pages/Users.js';
 import UsersCreatePage from '../pages/UsersCreate.js';
+import DevPage from '../pages/DevPage.js';
 import AppLayout from '../components/Layout.js';
 import { useAuth } from '../context/AuthContext.js';
 
@@ -40,6 +41,9 @@ const AppRoutes = () => {
         { path: 'planner', element: <PlannerPage /> },
         { path: 'users', element: <UsersPage /> },
         { path: 'users/create', element: <UsersCreatePage /> },
+
+        // 🔒 dev-панель, доступна только после логина
+        { path: 'dev', element: <DevPage /> },
       ],
     },
     { path: '*', element: <Navigate to="/dashboard" replace /> },

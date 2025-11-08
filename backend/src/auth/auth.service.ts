@@ -4,7 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcrypt';
+import * as bcrypt from 'bcryptjs'; // ← тут поменяли
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { JwtPayload } from './jwt-payload.interface.js';
 import { LoginDto } from './dto/login.dto.js';

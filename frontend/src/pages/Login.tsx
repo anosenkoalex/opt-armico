@@ -1,4 +1,4 @@
-import { Card, Form, Input, Button, Typography, message } from 'antd';
+import { Card, Form, Input, Button, message } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -38,6 +38,7 @@ const Login = () => {
           >
             <Input type="email" autoComplete="email" />
           </Form.Item>
+
           <Form.Item
             label={t('login.password')}
             name="password"
@@ -45,14 +46,12 @@ const Login = () => {
           >
             <Input.Password autoComplete="current-password" />
           </Form.Item>
+
           <Form.Item>
             <Button type="primary" htmlType="submit" block loading={isPending}>
               {t('login.submit')}
             </Button>
           </Form.Item>
-          <Typography.Paragraph type="secondary">
-            admin@armico.local / admin123
-          </Typography.Paragraph>
         </Form>
       </Card>
     </div>

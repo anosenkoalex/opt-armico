@@ -19,18 +19,18 @@ interface AssignmentEmailPayload {
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
-  private readonly host: string | null;
-  private readonly port: number | null;
-  private readonly user: string | null;
-  private readonly pass: string | null;
+  private readonly host?: string;
+  private readonly port?: number;
+  private readonly user?: string;
+  private readonly pass?: string;
   private readonly from: string;
   private readonly appUrl: string;
 
   constructor(private readonly configService: ConfigService) {
-    this.host = this.configService.get<string>('SMTP_HOST') ?? null;
-    this.port = this.configService.get<number>('SMTP_PORT') ?? null;
-    this.user = this.configService.get<string>('SMTP_USER') ?? null;
-    this.pass = this.configService.get<string>('SMTP_PASS') ?? null;
+    this.host = this.configService.get<string>('SMTP_HOST') ?? undefined;
+    this.port = this.configService.get<number>('SMTP_PORT') ?? undefined;
+    this.user = this.configService.get<string>('SMTP_USER') ?? undefined;
+    this.pass = this.configService.get<string>('SMTP_PASS') ?? undefined;
     this.from =
       this.configService.get<string>('MAIL_FROM') ?? 'no-reply@armico.local';
     this.appUrl = this.configService.get<string>('APP_URL') ?? '';
@@ -76,14 +76,18 @@ export class EmailService {
       if (useTls) {
         socket = createTlsConnection(
           {
-            host: this.host,
-            port: this.port,
+            host: this.host ?? 'localhost',
+            port: this.port ?? 465,
             rejectUnauthorized: false,
           },
           handleConnect,
         );
       } else {
-        socket = createConnection(this.port, this.host, handleConnect);
+        socket = createConnection(
+          this.port ?? 25,
+          this.host ?? 'localhost',
+          handleConnect,
+        );
       }
 
       socket.once('error', handleError);
@@ -202,7 +206,7 @@ export class EmailService {
     try {
       this.ensureResponse(await this.readResponse(socket), [220], 'GREETING');
       this.ensureResponse(
-        await this.sendCommand(socket, `EHLO ${this.host}`),
+        await this.sendCommand(socket, `EHLO ${this.host ?? 'localhost'}`),
         [250],
         'EHLO',
       );
@@ -214,7 +218,7 @@ export class EmailService {
       this.ensureResponse(
         await this.sendCommand(
           socket,
-          Buffer.from(this.user!, 'utf-8').toString('base64'),
+          Buffer.from(this.user ?? '', 'utf-8').toString('base64'),
         ),
         [334],
         'AUTH LOGIN (username)',
@@ -222,7 +226,7 @@ export class EmailService {
       this.ensureResponse(
         await this.sendCommand(
           socket,
-          Buffer.from(this.pass!, 'utf-8').toString('base64'),
+          Buffer.from(this.pass ?? '', 'utf-8').toString('base64'),
         ),
         [235],
         'AUTH LOGIN (password)',
@@ -255,4 +259,3 @@ export class EmailService {
     }
   }
 }
-

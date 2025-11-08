@@ -15,7 +15,7 @@ import {
 import { DownloadOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   downloadPlannerExcel,
@@ -42,18 +42,22 @@ const COLOR_PALETTE = [
 type Mode = 'byUsers' | 'byWorkplaces';
 
 const clampIndex = (value: number, max: number) => {
-  if (value < 0) {
-    return 0;
-  }
-  if (value > max) {
-    return max;
-  }
+  if (value < 0) return 0;
+  if (value > max) return max;
   return value;
 };
 
 const PlannerPage = () => {
   const { t } = useTranslation();
-  const { user, profile } = useAuth();
+
+  // жёстко кастуем user к типу с id/role, чтобы TS не ныл на JwtPayload
+  const { user: rawUser, profile } = useAuth();
+  const user = rawUser as unknown as {
+    id?: string;
+    role?: 'SUPER_ADMIN' | 'USER';
+    email?: string;
+  } | null;
+
   const [mode, setMode] = useState<Mode>('byUsers');
   const [page, setPage] = useState(1);
   const [range, setRange] = useState<[Dayjs, Dayjs]>([
@@ -74,47 +78,47 @@ const PlannerPage = () => {
     }
   }, [mode, canUseWorkplaceMode]);
 
-  const query = useQuery<PlannerMatrixResponse>({
-    queryKey: [
-      'planner-matrix',
-      mode,
-      canPaginate ? page : 1,
-      range[0]?.toISOString(),
-      range[1]?.toISOString(),
-      role,
-      profile?.org?.id ?? null,
-      user?.id ?? null,
-    ],
-    queryFn: async () => {
-      const [fromRaw, toRaw] = range;
-
-      if (!fromRaw || !toRaw) {
-        throw new Error('Invalid range');
-      }
-
-      const params = {
+  const query: UseQueryResult<PlannerMatrixResponse, Error> =
+    useQuery<PlannerMatrixResponse, Error>({
+      queryKey: [
+        'planner-matrix',
         mode,
-        from: fromRaw.startOf('day').toISOString(),
-        to: toRaw.endOf('day').toISOString(),
-        page: canPaginate ? page : 1,
-        pageSize: canPaginate ? pageSize : undefined,
-        userId: undefined as string | undefined,
-        orgId: undefined as string | undefined,
-      };
+        canPaginate ? page : 1,
+        range[0]?.toISOString(),
+        range[1]?.toISOString(),
+        role,
+        profile?.org?.id ?? null,
+        user?.id ?? null,
+      ],
+      queryFn: async () => {
+        const [fromRaw, toRaw] = range;
 
-      if (!isSuperAdmin && user?.id) {
-        params.userId = user.id;
-      }
+        if (!fromRaw || !toRaw) {
+          throw new Error('Invalid range');
+        }
 
-      if (!isSuperAdmin && profile?.org?.id) {
-        params.orgId = profile.org.id;
-      }
+        const params: Parameters<typeof fetchPlannerMatrix>[0] = {
+          mode,
+          from: fromRaw.startOf('day').toISOString(),
+          to: toRaw.endOf('day').toISOString(),
+          page: canPaginate ? page : 1,
+          pageSize: canPaginate ? pageSize : undefined,
+          userId: undefined,
+          orgId: undefined,
+        };
 
-      return fetchPlannerMatrix(params);
-    },
-    enabled: canView,
-    keepPreviousData: true,
-  });
+        if (!isSuperAdmin && user?.id) {
+          params.userId = user.id;
+        }
+
+        if (!isSuperAdmin && profile?.org?.id) {
+          params.orgId = profile.org.id;
+        }
+
+        return fetchPlannerMatrix(params);
+      },
+      enabled: canView,
+    });
 
   const days = useMemo<Dayjs[]>(() => {
     if (!query.data) {
@@ -145,9 +149,7 @@ const PlannerPage = () => {
 
     for (const row of query.data.rows) {
       for (const slot of row.slots) {
-        if (!slot.code) {
-          continue;
-        }
+        if (!slot.code) continue;
 
         if (!map.has(slot.code)) {
           map.set(slot.code, COLOR_PALETTE[index % COLOR_PALETTE.length]);
@@ -161,7 +163,10 @@ const PlannerPage = () => {
 
   const gridTemplate = useMemo(
     () => ({
-      gridTemplateColumns: `repeat(${Math.max(days.length, 1)}, minmax(80px, 1fr))`,
+      gridTemplateColumns: `repeat(${Math.max(
+        days.length,
+        1,
+      )}, minmax(80px, 1fr))`,
     }),
     [days.length],
   );
@@ -194,10 +199,10 @@ const PlannerPage = () => {
       mode === 'byWorkplaces'
         ? slot.user?.fullName || slot.user?.email || ''
         : slot.workplace
-          ? `${slot.workplace.code}${
-              slot.workplace.name ? ` — ${slot.workplace.name}` : ''
-            }`
-          : slot.org?.slug?.toUpperCase() ?? slot.name;
+        ? `${slot.workplace.code}${
+            slot.workplace.name ? ` — ${slot.workplace.name}` : ''
+          }`
+        : slot.org?.slug?.toUpperCase() ?? slot.name;
 
     return (
       <div
@@ -237,12 +242,12 @@ const PlannerPage = () => {
     }
 
     try {
-      const params = {
+      const params: Parameters<typeof downloadPlannerExcel>[0] = {
         from: fromRaw.startOf('day').toISOString(),
         to: toRaw.endOf('day').toISOString(),
         mode: mode === 'byUsers' ? 'users' : 'workplaces',
-        userId: undefined as string | undefined,
-        orgId: undefined as string | undefined,
+        userId: undefined,
+        orgId: undefined,
       };
 
       if (!isSuperAdmin && user?.id) {
@@ -283,7 +288,12 @@ const PlannerPage = () => {
             options={[
               { value: 'byUsers', label: t('planner.mode.users') },
               ...(canUseWorkplaceMode
-                ? [{ value: 'byWorkplaces', label: t('planner.mode.workplaces') }]
+                ? [
+                    {
+                      value: 'byWorkplaces',
+                      label: t('planner.mode.workplaces'),
+                    },
+                  ]
                 : []),
             ]}
           />
@@ -300,10 +310,7 @@ const PlannerPage = () => {
             format="DD.MM.YYYY"
           />
           <Space>
-            <Button
-              icon={<DownloadOutlined />}
-              onClick={handleDownload}
-            >
+            <Button icon={<DownloadOutlined />} onClick={handleDownload}>
               {t('planner.download')}
             </Button>
             {query.isFetching && <Spin size="small" />}
@@ -356,7 +363,7 @@ const PlannerPage = () => {
                   className="planner-grid planner-grid-body"
                   style={gridTemplate}
                 >
-                  {row.slots.map((slot) => renderSlot(slot, query.data))}
+                  {row.slots.map((slot) => renderSlot(slot, query.data!))}
                   {row.slots.length === 0 ? (
                     <div className="planner-empty-row">
                       <Typography.Text type="secondary">

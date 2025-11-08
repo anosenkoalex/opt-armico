@@ -11,6 +11,8 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { PlansModule } from './plans/plans.module.js';
 import { PlannerModule } from './planner/planner.module.js';
 import { FeedModule } from './feed/feed.module.js';
+import { SmsModule } from './sms/sms.module.js';
+import { DevModule } from './dev/dev.module.js';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { FeedModule } from './feed/feed.module.js';
     PlansModule,
     PlannerModule,
     FeedModule,
+    SmsModule,
+    DevModule,
   ],
 })
 export class AppModule {}
