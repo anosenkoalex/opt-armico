@@ -10,7 +10,6 @@ import { AssignmentsModule } from './assignments/assignments.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { PlansModule } from './plans/plans.module.js';
 import { PlannerModule } from './planner/planner.module.js';
-import { FeedModule } from './feed/feed.module.js';
 import { SmsModule } from './sms/sms.module.js';
 import { DevModule } from './dev/dev.module.js';
 
@@ -26,7 +25,6 @@ import { DevModule } from './dev/dev.module.js';
     NotificationsModule,
     PlansModule,
     PlannerModule,
-    FeedModule,
     SmsModule,
     DevModule,
   ],

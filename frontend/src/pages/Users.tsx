@@ -9,6 +9,7 @@ import {
   Table,
   Typography,
   message,
+  Checkbox,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -16,48 +17,83 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AxiosError } from 'axios';
 import {
+  PaginatedResponse,
+  User,
+  UserRole,
   createUser,
   deleteUser,
   fetchUsers,
   updateUser,
-  type User,
-  type UserRole,
+  sendUserPassword,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
-const roleOptions: UserRole[] = ['USER', 'SUPER_ADMIN'];
+type UsersQueryResult = PaginatedResponse<User>;
+
+// Только обычные роли, системные (SUPER_ADMIN) в списке не показываем
+const roleOptions: UserRole[] = ['USER', 'MANAGER'];
 
 const UsersPage = () => {
   const { t } = useTranslation();
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const [form] = Form.useForm();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [filters, setFilters] = useState<{
+    role?: UserRole;
+    search?: string;
+  }>({});
+  const [form] = Form.useForm();
 
   const isAdmin = user?.role === 'SUPER_ADMIN';
 
-  const usersQuery = useQuery({
-    queryKey: ['users'],
-    queryFn: fetchUsers,
+  const usersQuery = useQuery<UsersQueryResult>({
+    queryKey: ['users', { page, pageSize, ...filters }],
+    queryFn: () =>
+      fetchUsers({
+        page,
+        pageSize,
+        role: filters.role,
+        search: filters.search,
+      }),
     enabled: isAdmin,
+    keepPreviousData: true,
   });
 
-  const handleRequestError = (error: unknown) => {
-    const axiosError = error as AxiosError<{ message?: string }>;
-    message.error(axiosError.response?.data?.message ?? t('common.error'));
+  // Список сотрудников для отображения:
+  // скрываем всех SUPER_ADMIN (админ и dev)
+  const visibleUsers = useMemo(
+    () =>
+      (usersQuery.data?.data ?? []).filter(
+        (item) => item.role !== 'SUPER_ADMIN',
+      ),
+    [usersQuery.data],
+  );
+
+  const handleUserError = (error: unknown) => {
+    const axiosError = error as AxiosError<{ message?: string | string[] }>;
+    const msg = axiosError?.response?.data?.message;
+
+    if (typeof msg === 'string') {
+      message.error(msg);
+      return;
+    }
+
+    if (Array.isArray(msg)) {
+      message.error(msg.join('\n'));
+      return;
+    }
+
+    message.error(msg ?? t('common.error'));
   };
 
   const createMutation = useMutation({
     mutationFn: createUser,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['users'] });
-      message.success(t('users.created'));
-      setIsModalOpen(false);
-      setEditingUser(null);
-      form.resetFields();
+    onError: (error: unknown) => {
+      handleUserError(error);
     },
-    onError: handleRequestError,
   });
 
   const updateMutation = useMutation({
@@ -75,93 +111,51 @@ const UsersPage = () => {
       setEditingUser(null);
       form.resetFields();
     },
-    onError: handleRequestError,
+    onError: (error: unknown) => {
+      handleUserError(error);
+    },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: deleteUser,
+    mutationFn: (id: string) => deleteUser(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['users'] });
       message.success(t('users.deleted'));
     },
-    onError: handleRequestError,
+    onError: (error: unknown) => {
+      handleUserError(error);
+    },
   });
 
-  const openCreateModal = () => {
-    setEditingUser(null);
-    form.resetFields();
-    form.setFieldsValue({ role: roleOptions[0] });
-    setIsModalOpen(true);
-  };
+  const sendPasswordMutation = useMutation({
+    mutationFn: (id: string) => sendUserPassword(id),
+    onSuccess: () => {
+      message.success(t('users.sendPasswordSuccess'));
+    },
+    onError: (error: unknown) => {
+      const axiosError = error as AxiosError<{ message?: string } | string>;
+      const responseMessage =
+        typeof axiosError?.response?.data === 'string'
+          ? axiosError.response.data
+          : axiosError?.response?.data?.message;
 
-  const openEditModal = (record: User) => {
-    setEditingUser(record);
-    form.setFieldsValue({
-      fullName: record.fullName ?? '',
-      email: record.email,
-      role: record.role,
-      password: undefined,
-    });
-    setIsModalOpen(true);
-  };
-
-  const confirmDelete = (record: User) => {
-    Modal.confirm({
-      title: t('users.deleteConfirmTitle'),
-      content: t('users.deleteConfirmDescription', {
-        name: record.fullName ?? record.email,
-      }),
-      okText: t('common.yes'),
-      cancelText: t('common.cancel'),
-      okButtonProps: { danger: true },
-      onOk: () => deleteMutation.mutateAsync(record.id),
-    });
-  };
-
-  const handleModalOk = async () => {
-    try {
-      const values = await form.validateFields();
-      const payload = {
-        fullName: values.fullName.trim(),
-        email: values.email.trim(),
-        role: values.role as UserRole,
-      };
-
-      if (editingUser) {
-        const updatePayload: Parameters<typeof updateUser>[1] = {
-          fullName: payload.fullName,
-          email: payload.email,
-          role: payload.role,
-        };
-
-        if (values.password) {
-          updatePayload.password = values.password;
-        }
-
-        await updateMutation.mutateAsync({
-          id: editingUser.id,
-          values: updatePayload,
-        });
-      } else {
-        await createMutation.mutateAsync({
-          ...payload,
-          password: values.password,
-        });
+      if (typeof responseMessage === 'string' && responseMessage.trim()) {
+        message.error(responseMessage);
+        return;
       }
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error(error);
-      }
-    }
-  };
 
-  const columns: ColumnsType<User & { key: string }> = useMemo(
+      message.error(t('users.sendPasswordError'));
+    },
+  });
+
+  const columns: ColumnsType<User> = useMemo(
     () => [
       {
         title: t('users.fullName'),
         dataIndex: 'fullName',
         key: 'fullName',
-        render: (_value, record) => record.fullName ?? '—',
+        render: (value: string | null | undefined, record: User) =>
+          value || record.email || t('users.noName'),
       },
       {
         title: t('users.email'),
@@ -169,28 +163,135 @@ const UsersPage = () => {
         key: 'email',
       },
       {
+        title: t('users.phone'),
+        dataIndex: 'phone',
+        key: 'phone',
+        render: (value: string | null | undefined) => value ?? '—',
+      },
+      {
         title: t('users.role'),
         dataIndex: 'role',
         key: 'role',
-        render: (value: User['role']) => t(`users.roles.${value}` as const),
+        render: (value: UserRole) =>
+          value === 'MANAGER'
+            ? t('users.roles.manager')
+            : value === 'USER'
+              ? t('users.roles.user')
+              : t('users.roles.superAdmin'),
       },
       {
         title: t('users.actions'),
         key: 'actions',
         render: (_value, record) => (
           <Space size="small">
-            <Button type="link" onClick={() => openEditModal(record)}>
+            <Button
+              type="link"
+              onClick={() => {
+                setEditingUser(record);
+                form.setFieldsValue({
+                  fullName: record.fullName,
+                  email: record.email,
+                  role: record.role,
+                  phone: (record as any).phone,
+                });
+                setIsModalOpen(true);
+              }}
+            >
               {t('common.edit')}
             </Button>
-            <Button type="link" danger onClick={() => confirmDelete(record)}>
+
+            <Button
+              type="link"
+              onClick={() => {
+                sendPasswordMutation.mutate(record.id);
+              }}
+            >
+              {t('users.sendPassword')}
+            </Button>
+
+            <Button
+              type="link"
+              danger
+              onClick={() => {
+                Modal.confirm({
+                  title: t('users.deleteConfirmTitle'),
+                  content: t('users.deleteConfirmDescription', {
+                    name: record.fullName || record.email,
+                  }),
+                  okText: t('common.delete'),
+                  cancelText: t('common.cancel'),
+                  centered: true,
+                  onOk: () => deleteMutation.mutate(record.id),
+                });
+              }}
+            >
               {t('common.delete')}
             </Button>
           </Space>
         ),
       },
     ],
-    [confirmDelete, openEditModal, t],
+    [t, deleteMutation, form, sendPasswordMutation],
   );
+
+  const pagination = usersQuery.data?.meta;
+
+  const openCreateModal = () => {
+    setEditingUser(null);
+    form.resetFields();
+    form.setFieldsValue({ role: 'USER', sendPasswordOnCreate: false });
+    setIsModalOpen(true);
+  };
+
+  const handleModalOk = async () => {
+    try {
+      const values = await form.validateFields();
+
+      if (editingUser) {
+        // Редактирование пользователя — пароль не трогаем
+        await updateMutation.mutateAsync({
+          id: editingUser.id,
+          values: {
+            fullName: values.fullName,
+            email: values.email,
+            role: values.role,
+            phone: values.phone,
+          },
+        });
+      } else {
+        // Создание пользователя
+        const sendPasswordOnCreate = Boolean(values.sendPasswordOnCreate);
+
+        const created = await createMutation.mutateAsync({
+          fullName: values.fullName,
+          email: values.email,
+          // если пароль пустой — не отправляем, бэкенд сам сгенерирует
+          password: values.password || undefined,
+          role: values.role,
+          phone: values.phone,
+        });
+
+        // Обновляем список
+        void queryClient.invalidateQueries({ queryKey: ['users'] });
+        message.success(t('users.created'));
+
+        // Если стоит галочка "Отправить пароль" — сразу шлём пароль
+        if (sendPasswordOnCreate && created?.id) {
+          await sendPasswordMutation.mutateAsync(created.id).catch(() => {
+            // Ошибка уже обработана в sendPasswordMutation.onError
+          });
+        }
+
+        setIsModalOpen(false);
+        setEditingUser(null);
+        form.resetFields();
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error(error);
+      }
+    }
+  };
 
   if (!isAdmin) {
     return <Result status="403" title={t('admin.accessDenied')} />;
@@ -206,11 +307,51 @@ const UsersPage = () => {
           {t('users.createAction')}
         </Button>
       </div>
+
+      <Form
+        layout="inline"
+        className="mb-4"
+        onValuesChange={(_changedValues, allValues) => {
+          setFilters({
+            role: allValues.role,
+            search: allValues.search,
+          });
+          setPage(1);
+        }}
+      >
+        <Form.Item name="role" label={t('users.role')}>
+          <Select
+            allowClear
+            options={roleOptions.map((value) => ({
+              value,
+              label:
+                value === 'MANAGER'
+                  ? t('users.roles.manager')
+                  : t('users.roles.user'),
+            }))}
+            style={{ width: 220 }}
+          />
+        </Form.Item>
+        <Form.Item name="search" label={t('users.search')}>
+          <Input.Search allowClear style={{ width: 260 }} />
+        </Form.Item>
+      </Form>
+
       <Table
         rowKey={(record) => record.id}
         loading={usersQuery.isLoading}
-        dataSource={(usersQuery.data ?? []).map((item) => ({ ...item, key: item.id }))}
+        dataSource={visibleUsers}
         columns={columns}
+        pagination={{
+          current: page,
+          pageSize,
+          total: pagination?.total ?? 0,
+          onChange: (nextPage, nextSize) => {
+            setPage(nextPage);
+            setPageSize(nextSize ?? pageSize);
+          },
+          showSizeChanger: true,
+        }}
       />
 
       <Modal
@@ -222,52 +363,65 @@ const UsersPage = () => {
           form.resetFields();
         }}
         onOk={handleModalOk}
-        confirmLoading={createMutation.isPending || updateMutation.isPending}
         okText={t('common.save')}
         cancelText={t('common.cancel')}
+        confirmLoading={
+          createMutation.isPending || updateMutation.isPending
+        }
       >
         <Form form={form} layout="vertical">
+          <Form.Item label={t('users.fullName')} name="fullName">
+            <Input />
+          </Form.Item>
+
           <Form.Item
-            name="fullName"
-            label={t('users.fullName')}
-            rules={[{ required: true, message: t('common.required') }]}
+            label={t('users.email')}
+            name="email"
+            rules={[
+              { required: true, message: t('common.required') },
+              { type: 'email', message: t('users.validation.email') },
+            ]}
           >
             <Input />
           </Form.Item>
-          <Form.Item
-            name="email"
-            label={t('users.email')}
-            rules={[
-              { required: true, message: t('common.required') },
-              { type: 'email', message: t('users.email') },
-            ]}
-          >
-            <Input type="email" />
+
+          <Form.Item label={t('users.phone')} name="phone">
+            <Input placeholder={t('users.phonePlaceholder')} />
           </Form.Item>
+
+          {!editingUser && (
+            <>
+              <Form.Item
+                label={t('users.password')}
+                name="password"
+                rules={[]}
+                extra={t('users.passwordPlaceholder')}
+              >
+                <Input.Password />
+              </Form.Item>
+
+              <Form.Item
+                name="sendPasswordOnCreate"
+                valuePropName="checked"
+              >
+                <Checkbox>{t('users.sendPassword')}</Checkbox>
+              </Form.Item>
+            </>
+          )}
+
           <Form.Item
-            name="password"
-            label={t('login.password')}
-            rules={
-              editingUser
-                ? []
-                : [{ required: true, message: t('common.required') }]
-            }
-          >
-            <Input.Password
-              placeholder={
-                editingUser ? t('users.passwordPlaceholder') : undefined
-              }
-            />
-          </Form.Item>
-          <Form.Item
-            name="role"
             label={t('users.role')}
+            name="role"
             rules={[{ required: true, message: t('common.required') }]}
+            initialValue="USER"
           >
             <Select
-              options={roleOptions.map((role) => ({
-                label: t(`users.roles.${role}` as const),
-                value: role,
+              options={roleOptions.map((value) => ({
+                value,
+                label:
+                  value === 'MANAGER'
+                    ? t('users.roles.manager')
+                    : t('users.roles.user'),
               }))}
             />
           </Form.Item>

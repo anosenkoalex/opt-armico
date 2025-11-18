@@ -164,9 +164,6 @@ const MyPlace = () => {
           <Descriptions.Item label={t('myPlace.name')}>
             {profile.fullName ?? profile.email}
           </Descriptions.Item>
-          <Descriptions.Item label={t('myPlace.position')}>
-            {profile.position ?? t('myPlace.positionUnknown')}
-          </Descriptions.Item>
           <Descriptions.Item label={t('myPlace.org')}>
             {profile.org?.name ?? t('myPlace.orgUnknown')}
           </Descriptions.Item>

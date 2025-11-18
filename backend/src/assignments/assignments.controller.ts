@@ -7,6 +7,7 @@ import {
   Post,
   Query,
   UseGuards,
+  Delete,
 } from '@nestjs/common';
 import { AssignmentsService } from './assignments.service.js';
 import {
@@ -33,7 +34,7 @@ export class AssignmentsController {
   constructor(private readonly assignmentsService: AssignmentsService) {}
 
   @Post()
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   create(
     @Body(new ZodValidationPipe(createAssignmentSchema))
     payload: CreateAssignmentDto,
@@ -41,8 +42,11 @@ export class AssignmentsController {
     return this.assignmentsService.create(payload);
   }
 
+  /**
+   * Обычный список назначений (ТОЛЬКО не удалённые)
+   */
   @Get()
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   findAll(
     @Query(new ZodValidationPipe(listAssignmentsSchema))
     query: ListAssignmentsDto,
@@ -50,14 +54,26 @@ export class AssignmentsController {
     return this.assignmentsService.findAll(query);
   }
 
+  /**
+   * Список назначений в корзине (isDeleted = true)
+   */
+  @Get('trash')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  findAllInTrash(
+    @Query(new ZodValidationPipe(listAssignmentsSchema))
+    query: ListAssignmentsDto,
+  ) {
+    return this.assignmentsService.findAllInTrash(query);
+  }
+
   @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   findOne(@Param('id') id: string) {
     return this.assignmentsService.findOne(id);
   }
 
   @Patch(':id')
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateAssignmentSchema))
@@ -66,9 +82,34 @@ export class AssignmentsController {
     return this.assignmentsService.update(id, payload);
   }
 
+  /**
+   * Мягкое удаление назначения → в корзину
+   */
+  @Delete(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  softDelete(@Param('id') id: string) {
+    return this.assignmentsService.softDelete(id);
+  }
+
+  /**
+   * Восстановление назначения из корзины
+   */
+  @Post(':id/restore')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  restoreFromTrash(@Param('id') id: string) {
+    return this.assignmentsService.restoreFromTrash(id);
+  }
+
   @Post(':id/notify')
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   notify(@Param('id') id: string) {
     return this.assignmentsService.notify(id);
+  }
+
+  // ✅ Завершение назначения (ARCHIVED + автозаполнение endsAt при необходимости)
+  @Post(':id/complete')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  complete(@Param('id') id: string) {
+    return this.assignmentsService.complete(id);
   }
 }

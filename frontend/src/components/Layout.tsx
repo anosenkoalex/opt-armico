@@ -29,12 +29,15 @@ const AppLayout = () => {
   const navigationItems = useMemo(() => {
     const isAdmin = user?.role === 'SUPER_ADMIN';
     const isWorker = user?.role === 'USER';
+    const isDevUser = user?.email === 'dev@armico.local';
 
-    const items = [{
-      key: 'dashboard',
-      path: '/dashboard',
-      label: t('layout.dashboard'),
-    }];
+    const items = [
+      {
+        key: 'dashboard',
+        path: '/dashboard',
+        label: t('layout.dashboard'),
+      },
+    ];
 
     if (isWorker) {
       items.push({
@@ -66,11 +69,26 @@ const AppLayout = () => {
           path: '/users',
           label: t('layout.users'),
         },
+        // 📊 Статистика (отдельная страница, логически под сотрудниками)
+        {
+          key: 'statistics',
+          path: '/statistics',
+          label: t('layout.statistics'),
+        },
       );
     }
 
+    // 🔧 Dev-панель ТОЛЬКО для dev@armico.local, админ её не видит
+    if (isDevUser) {
+      items.push({
+        key: 'dev',
+        path: '/dev',
+        label: 'Developer console',
+      });
+    }
+
     return items;
-  }, [user?.role, t]);
+  }, [user?.role, user?.email, t]);
 
   const selectedKey = useMemo(() => {
     const match = navigationItems.find((item) =>
@@ -91,7 +109,11 @@ const AppLayout = () => {
 
   const notificationsOverlay = (
     <div className="w-80 max-h-80 overflow-y-auto px-3 py-2">
-      {notifications.length === 0 ? (
+      {notificationsQuery.isLoading ? (
+        <Typography.Text type="secondary">
+          {t('common.loading')}
+        </Typography.Text>
+      ) : notifications.length === 0 ? (
         <Typography.Text type="secondary">
           {t('notifications.empty')}
         </Typography.Text>
@@ -127,7 +149,9 @@ const AppLayout = () => {
   return (
     <Layout className="min-h-screen">
       <Sider breakpoint="lg">
-        <div className="text-white text-lg font-semibold px-4 py-3">Armico</div>
+        <div className="text-white text-lg font-semibold px-4 py-3">
+          Armico
+        </div>
         <Menu
           theme="dark"
           mode="inline"
@@ -150,7 +174,8 @@ const AppLayout = () => {
         <Header className="bg-white px-6 flex items-center justify-between shadow-sm">
           <Space size="middle">
             <Typography.Text className="font-medium">
-              {t('layout.welcome')} {profile?.fullName ?? profile?.email ?? ''}
+              {t('layout.welcome')}{' '}
+              {profile?.fullName ?? profile?.email ?? ''}
             </Typography.Text>
             {isFetchingProfile && <Spin size="small" />}
           </Space>
@@ -165,7 +190,17 @@ const AppLayout = () => {
                 overflowCount={99}
                 offset={[-4, 4]}
               >
-                <Button type="text" icon={<BellOutlined />} />
+                <Button
+                  type="text"
+                  shape="circle"
+                  icon={<BellOutlined />}
+                  aria-label="Notifications"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                />
               </Badge>
             </Dropdown>
             <Button onClick={logout}>{t('layout.logout')}</Button>

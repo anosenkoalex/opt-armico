@@ -1,12 +1,22 @@
-import { Button, Card, Form, Input, Result, Select, Typography, message } from 'antd';
+import {
+  Button,
+  Card,
+  Checkbox,
+  Form,
+  Input,
+  Result,
+  Select,
+  Typography,
+  message,
+} from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import type { AxiosError } from 'axios';
-import { createUser, type UserRole } from '../api/client.js';
+import { createUser, sendUserPassword, type UserRole } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
-const roleOptions: UserRole[] = ['USER', 'SUPER_ADMIN'];
+const roleOptions: UserRole[] = ['USER', 'MANAGER'];
 
 const UsersCreatePage = () => {
   const { t } = useTranslation();
@@ -41,45 +51,66 @@ const UsersCreatePage = () => {
         form={form}
         layout="vertical"
         className="mt-4 max-w-xl"
-        initialValues={{ role: roleOptions[0] }}
-        onFinish={(values: {
-          fullName: string;
+        initialValues={{ role: roleOptions[0], sendPassword: false }}
+        onFinish={async (values: {
+          fullName?: string;
           email: string;
-          password: string;
+          phone?: string;
+          password?: string;
           role: UserRole;
+          sendPassword?: boolean;
         }) => {
-          mutation.mutate({
-            fullName: values.fullName.trim(),
-            email: values.email.trim(),
-            password: values.password,
-            role: values.role,
-          });
+          try {
+            const created = await mutation.mutateAsync({
+              fullName: values.fullName?.trim() || undefined,
+              email: values.email.trim(),
+              password: values.password || undefined, // пустой → бэкенд сам генерит
+              role: values.role,
+              phone: values.phone?.trim() || undefined,
+            });
+
+            if (values.sendPassword && created?.id) {
+              await sendUserPassword(created.id);
+            }
+          } catch (e) {
+            // ошибки уже обработаны в onError
+          }
         }}
       >
-        <Form.Item
-          name="fullName"
-          label={t('users.fullName')}
-          rules={[{ required: true, message: t('common.required') }]}
-        >
+        <Form.Item name="fullName" label={t('users.fullName')}>
           <Input />
         </Form.Item>
+
         <Form.Item
           name="email"
           label={t('users.email')}
           rules={[
             { required: true, message: t('common.required') },
-            { type: 'email', message: t('users.email') },
+            { type: 'email', message: t('users.validation.email') },
           ]}
         >
           <Input type="email" />
         </Form.Item>
+
+        <Form.Item name="phone" label={t('users.phone')}>
+          <Input placeholder={t('users.phonePlaceholder')} />
+        </Form.Item>
+
         <Form.Item
           name="password"
-          label={t('login.password')}
-          rules={[{ required: true, message: t('common.required') }]}
+          label={t('users.password')}
+          extra={t('users.passwordPlaceholder')}
         >
           <Input.Password />
         </Form.Item>
+
+        <Form.Item
+          name="sendPassword"
+          valuePropName="checked"
+        >
+          <Checkbox>{t('users.sendPasswordOnCreate')}</Checkbox>
+        </Form.Item>
+
         <Form.Item
           name="role"
           label={t('users.role')}
@@ -92,6 +123,7 @@ const UsersCreatePage = () => {
             }))}
           />
         </Form.Item>
+
         <Form.Item>
           <Button
             type="primary"

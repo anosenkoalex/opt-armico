@@ -1,9 +1,10 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { AssignmentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CreateWorkplaceDto } from './dto/create-workplace.dto.js';
 import { UpdateWorkplaceDto } from './dto/update-workplace.dto.js';
@@ -115,5 +116,44 @@ export class WorkplacesService {
     } catch (error) {
       this.handleUniqueError(error);
     }
+  }
+
+  async remove(id: string) {
+    const workplace = await this.prisma.workplace.findUnique({
+      where: { id },
+      select: { id: true, code: true, name: true },
+    });
+
+    if (!workplace) {
+      throw new NotFoundException('Workplace not found');
+    }
+
+    // 1) Считаем ТОЛЬКО активные назначения
+    const activeAssignments = await this.prisma.assignment.count({
+      where: {
+        workplaceId: id,
+        status: AssignmentStatus.ACTIVE,
+      },
+    });
+
+    if (activeAssignments > 0) {
+      throw new BadRequestException(
+        'Нельзя удалить рабочее место, пока к нему привязаны активные назначения. ' +
+          'Сначала завершите или переназначьте сотрудников.',
+      );
+    }
+
+    // 2) Архивные (и любые остальные) назначения просто удаляем вместе с рабочим местом
+    await this.prisma.assignment.deleteMany({
+      where: {
+        workplaceId: id,
+      },
+    });
+
+    await this.prisma.workplace.delete({
+      where: { id },
+    });
+
+    return { success: true };
   }
 }

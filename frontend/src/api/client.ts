@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-export type UserRole = 'USER' | 'SUPER_ADMIN';
+export type UserRole = 'USER' | 'MANAGER' | 'SUPER_ADMIN';
 
 export type JwtPayload = {
   sub: string;
@@ -47,6 +47,36 @@ export type Workplace = {
 
 export type AssignmentStatus = 'ACTIVE' | 'ARCHIVED';
 
+/**
+ * Тип смены — должен совпадать с Prisma enum ShiftKind
+ * DEFAULT / OFFICE / REMOTE / DAY_OFF
+ */
+export type ShiftKind = 'DEFAULT' | 'OFFICE' | 'REMOTE' | 'DAY_OFF';
+
+/**
+ * Смена в назначении (ответ бэка)
+ */
+export type AssignmentShift = {
+  id: string;
+  assignmentId: string;
+  date: string; // день смены
+  startsAt: string; // начало
+  endsAt: string; // конец
+  kind: ShiftKind; // тип смены
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * Смена при создании/обновлении (запрос на бэк)
+ */
+export type AssignmentShiftInput = {
+  date: string;
+  startsAt: string;
+  endsAt: string;
+  kind?: ShiftKind;
+};
+
 export type Assignment = {
   id: string;
   userId: string;
@@ -60,6 +90,8 @@ export type Assignment = {
     fullName?: string | null;
   };
   workplace?: Pick<Workplace, 'id' | 'code' | 'name' | 'location'>;
+  // 👇 теперь с сменами
+  shifts?: AssignmentShift[];
 };
 
 export type NotificationType =
@@ -137,6 +169,7 @@ export type User = {
   fullName?: string | null;
   position?: string | null;
   role: UserRole;
+  phone?: string | null;
   orgId: string | null;
   org?: Org | null;
   createdAt?: string;
@@ -166,7 +199,9 @@ export type PlannerMatrixSlot = {
   status: AssignmentStatus;
   user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'> | null;
   org?: Pick<Org, 'id' | 'name' | 'slug'> | null;
-  workplace?: { id: string; code: string; name: string; location?: string | null } | null;
+  workplace?:
+    | { id: string; code: string; name: string; location?: string | null }
+    | null;
 };
 
 export type PlannerMatrixRow = {
@@ -252,7 +287,10 @@ export const fetchAdminFeed = async (params?: {
   return data;
 };
 
-export const fetchRecentFeed = async (params?: { take?: number; orgId?: string }) => {
+export const fetchRecentFeed = async (params?: {
+  take?: number;
+  orgId?: string;
+}) => {
   const { data } = await api.get<FeedItem[]>(`/feed/recent`, {
     params,
   });
@@ -314,21 +352,57 @@ export const fetchAssignments = async (params: {
   page?: number;
   pageSize?: number;
 }) => {
-  const { data } = await api.get<PaginatedResponse<Assignment>>(
-    '/assignments',
-    {
-      params,
-    },
-  );
+  const { data } = await api.get<
+    | PaginatedResponse<Assignment>
+    | {
+        items: Assignment[];
+        total: number;
+        page: number;
+        pageSize: number;
+      }
+  >('/assignments', {
+    params,
+  });
   return data;
 };
 
+/**
+ * Список назначений в корзине (isDeleted = true)
+ */
+export const fetchAssignmentsFromTrash = async (params: {
+  userId?: string;
+  workplaceId?: string;
+  status?: AssignmentStatus;
+  from?: string;
+  to?: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const { data } = await api.get<
+    | PaginatedResponse<Assignment>
+    | {
+        items: Assignment[];
+        total: number;
+        page: number;
+        pageSize: number;
+      }
+  >('/assignments/trash', {
+    params,
+  });
+  return data;
+};
+
+/**
+ * Создание назначения с набором смен.
+ * shifts — тот массив, который ты собираешь в AssignmentsPage.
+ */
 export const createAssignment = async (payload: {
   userId: string;
   workplaceId: string;
   startsAt: string;
   endsAt?: string | null;
   status?: AssignmentStatus;
+  shifts: AssignmentShiftInput[];
 }) => {
   const { data } = await api.post<Assignment>('/assignments', payload);
   return data;
@@ -342,6 +416,7 @@ export const updateAssignment = async (
     startsAt: string;
     endsAt: string | null;
     status: AssignmentStatus;
+    shifts: AssignmentShiftInput[];
   }>,
 ) => {
   const { data } = await api.patch<Assignment>(`/assignments/${id}`, payload);
@@ -352,24 +427,71 @@ export const notifyAssignment = async (id: string) => {
   await api.post(`/assignments/${id}/notify`);
 };
 
-export const fetchUsers = async () => {
-  const { data } = await api.get<User[]>('/users');
+// ✅ Завершить назначение (перевод в ARCHIVED, выставление endsAt на бэке)
+export const completeAssignment = async (id: string) => {
+  const { data } = await api.post<Assignment>(`/assignments/${id}/complete`);
+  return data;
+};
+
+/**
+ * Мягкое удаление назначения (в корзину)
+ */
+export const deleteAssignment = async (id: string) => {
+  await api.delete(`/assignments/${id}`);
+};
+
+/**
+ * Восстановление назначения из корзины
+ */
+export const restoreAssignment = async (id: string) => {
+  const { data } = await api.post<Assignment>(`/assignments/${id}/restore`);
+  return data;
+};
+
+export const fetchUsers = async (params: {
+  page?: number;
+  pageSize?: number;
+  role?: UserRole;
+  search?: string;
+}) => {
+  const page = params.page ?? 1;
+  const requestedPageSize = params.pageSize ?? 50;
+  const safePageSize = Math.min(requestedPageSize, 100); // 👈 не даём уйти выше 100
+
+  const { data } = await api.get<PaginatedResponse<User>>('/users', {
+    params: {
+      page,
+      pageSize: safePageSize,
+      role: params.role,
+      search: params.search,
+    },
+  });
   return data;
 };
 
 export const createUser = async (payload: {
-  fullName: string;
+  fullName?: string;
   email: string;
-  password: string;
-  role: UserRole;
+  password?: string;
+  role?: UserRole;
+  phone?: string;
 }) => {
-  const { data } = await api.post<User>('/users', payload);
+  const { data } = await api.post<User & { rawPassword?: string }>(
+    '/users',
+    payload,
+  );
   return data;
 };
 
 export const updateUser = async (
   id: string,
-  payload: Partial<{ fullName: string; email: string; password: string; role: UserRole }>,
+  payload: Partial<{
+    fullName: string;
+    email: string;
+    password: string;
+    role: UserRole;
+    phone: string;
+  }>,
 ) => {
   const { data } = await api.patch<User>(`/users/${id}`, payload);
   return data;
@@ -377,6 +499,10 @@ export const updateUser = async (
 
 export const deleteUser = async (id: string) => {
   await api.delete(`/users/${id}`);
+};
+
+export const sendUserPassword = async (id: string) => {
+  await api.post(`/users/${id}/send-password`);
 };
 
 export const fetchPlannerMatrix = async (params: {
@@ -421,8 +547,14 @@ export const confirmMySlot = async (slotId: string) => {
   return data;
 };
 
-export const requestSlotSwap = async (slotId: string, payload: { comment: string }) => {
-  const { data } = await api.post<Slot>(`/me/slots/${slotId}/request-swap`, payload);
+export const requestSlotSwap = async (
+  slotId: string,
+  payload: { comment: string },
+) => {
+  const { data } = await api.post<Slot>(
+    `/me/slots/${slotId}/request-swap`,
+    payload,
+  );
   return data;
 };
 

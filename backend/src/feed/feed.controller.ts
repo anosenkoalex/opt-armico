@@ -1,11 +1,11 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { FeedService } from './feed.service.js';
-import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
-import { RolesGuard } from '../common/guards/roles.guard.js';
-import { Roles } from '../common/decorators/roles.decorator.js';
+import { FeedService } from './feed.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { CurrentUser } from '../common/decorators/current-user.decorator.js';
-import { JwtPayload } from '../auth/jwt-payload.interface.js';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { JwtPayload } from '../auth/jwt-payload.interface';
 
 @Controller('feed')
 @UseGuards(JwtAuthGuard, RolesGuard)

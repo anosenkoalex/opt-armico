@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -8,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { WorkplacesService } from './workplaces.service.js';
 import {
   CreateWorkplaceDto,
@@ -17,15 +19,14 @@ import {
   UpdateWorkplaceDto,
   updateWorkplaceSchema,
 } from './dto/update-workplace.dto.js';
-import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
-import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
-import { RolesGuard } from '../common/guards/roles.guard.js';
-import { Roles } from '../common/decorators/roles.decorator.js';
-import { UserRole } from '@prisma/client';
 import {
   ListWorkplacesDto,
   listWorkplacesSchema,
 } from './dto/list-workplaces.dto.js';
+import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
+import { RolesGuard } from '../common/guards/roles.guard.js';
+import { Roles } from '../common/decorators/roles.decorator.js';
 
 @Controller('workplaces')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -64,5 +65,11 @@ export class WorkplacesController {
     payload: UpdateWorkplaceDto,
   ) {
     return this.workplacesService.update(id, payload);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.SUPER_ADMIN)
+  remove(@Param('id') id: string) {
+    return this.workplacesService.remove(id);
   }
 }

@@ -1,6 +1,6 @@
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = "postgresql://armico:armico@postgres:5432/armico"
 }
 
 generator client {
@@ -9,6 +9,7 @@ generator client {
 
 enum UserRole {
   SUPER_ADMIN
+  MANAGER
   USER
 }
 
@@ -37,6 +38,14 @@ enum NotificationType {
   ASSIGNMENT_MOVED
 }
 
+// 🔥 НОВЫЙ enum для типа смены
+enum ShiftKind {
+  DEFAULT   // обычная смена
+  OFFICE    // работа в офисе
+  REMOTE    // удалёнка
+  DAY_OFF   // выходной / day off
+}
+
 model Org {
   id          String        @id @default(cuid())
   name        String
@@ -59,10 +68,7 @@ model User {
   position      String?
   role          UserRole       @default(USER)
 
-  /// скрытый/системный пользователь (dev и т.п.)
   isSystemUser  Boolean        @default(false)
-
-  /// телефон для SMS-уведомлений
   phone         String?
 
   assignments   Assignment[]
@@ -143,6 +149,32 @@ model Assignment {
   status      AssignmentStatus @default(ACTIVE)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+
+  /// мягкое удаление — если не null, значит лежит в корзине
+  deletedAt   DateTime?
+
+  shifts      AssignmentShift[]
+}
+
+model AssignmentShift {
+  id           String      @id @default(cuid())
+  assignmentId String
+  assignment   Assignment  @relation(fields: [assignmentId], references: [id])
+
+  /// Дата смены (день)
+  date         DateTime
+
+  /// Конкретное время начала/окончания смены
+  startsAt     DateTime
+  endsAt       DateTime
+
+  /// 🔥 Тип смены (офис, удалёнка, day off и т.д.)
+  kind         ShiftKind  @default(DEFAULT)
+
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([assignmentId, date])
 }
 
 model Notification {

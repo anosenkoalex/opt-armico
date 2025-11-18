@@ -34,6 +34,21 @@ type DevTestSmsBody = {
   text?: string;
 };
 
+// Email — пока заглушки, без сохранения в БД
+type DevEmailSettingsBody = {
+  enabled?: boolean;
+  host?: string | null;
+  port?: number | null;
+  secure?: boolean;
+  user?: string | null;
+  password?: string | null;
+  from?: string | null;
+};
+
+type DevTestEmailBody = {
+  email: string;
+};
+
 @Controller('dev')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class DevController {
@@ -111,6 +126,54 @@ export class DevController {
     await this.smsService.sendSms(phone, text);
 
     return { success: true };
+  }
+
+  // ---------- EMAIL НАСТРОЙКИ (ПОКА ЗАГЛУШКА) ----------
+
+  @Get('email-settings')
+  async getEmailSettings(@CurrentUser() user: DevCurrentUser) {
+    this.ensureDev(user);
+
+    // Пока просто возвращаем дефолты, без реального хранилища
+    return {
+      enabled: false,
+      host: null as string | null,
+      port: null as number | null,
+      secure: true,
+      user: null as string | null,
+      from: null as string | null,
+    };
+  }
+
+  @Put('email-settings')
+  async updateEmailSettings(
+    @CurrentUser() user: DevCurrentUser,
+    @Body() _body: DevEmailSettingsBody,
+  ) {
+    this.ensureDev(user);
+
+    // Здесь в будущем можно будет сохранять настройки в БД/конфиг.
+    // Сейчас просто принимаем и делаем вид, что сохранили.
+    return { success: true };
+  }
+
+  @Post('test-email')
+  async testEmail(
+    @CurrentUser() user: DevCurrentUser,
+    @Body() body: DevTestEmailBody,
+  ) {
+    this.ensureDev(user);
+
+    const email = body.email?.trim();
+    if (!email) {
+      throw new BadRequestException('email is required');
+    }
+
+    // Здесь в будущем будет реальная отправка письма через EmailService.
+    // Сейчас честно говорим, что шлюз не настроен.
+    throw new BadRequestException(
+      'Email-шлюз пока не настроен. Проверьте настройки SMTP в Developer Console.',
+    );
   }
 
   // ---------- ЛОГИ ----------

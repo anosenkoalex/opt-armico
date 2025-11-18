@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AssignmentStatus } from '@prisma/client';
-import { PrismaService } from '../common/prisma/prisma.service.js';
+import { PrismaService } from '../common/prisma/prisma.service';
 
 export type FeedItemType = 'assignment' | 'workplace';
 
@@ -75,7 +75,7 @@ export class FeedService {
     ]);
 
     const combined = [
-      ...assignments.map((assignment) => ({
+      ...assignments.map((assignment: any) => ({
         title: 'Назначение',
         type: 'assignment' as const,
         at: assignment.updatedAt,
@@ -114,7 +114,7 @@ export class FeedService {
           status: assignment.status,
         },
       })),
-      ...workplaces.map((workplace) => ({
+      ...workplaces.map((workplace: any) => ({
         title: 'Рабочее место',
         type: 'workplace' as const,
         at: workplace.updatedAt,

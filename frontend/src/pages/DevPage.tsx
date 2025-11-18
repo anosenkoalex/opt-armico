@@ -27,6 +27,17 @@ type SmsSettingsForm = {
   testText?: string;
 };
 
+type EmailSettingsForm = {
+  enabled: boolean;
+  host?: string | null;
+  port?: string | null;
+  secure?: boolean;
+  user?: string | null;
+  password?: string | null;
+  from?: string | null;
+  testEmail?: string;
+};
+
 type DevUserInfo = {
   id: string;
   fullName?: string | null;
@@ -63,23 +74,29 @@ type DevLogsState = {
 const DevPage = () => {
   const { user, token } = useAuth();
   const [smsForm] = Form.useForm<SmsSettingsForm>();
+  const [emailForm] = Form.useForm<EmailSettingsForm>();
 
   const [loadingSms, setLoadingSms] = useState(false);
   const [savingSms, setSavingSms] = useState(false);
   const [testingSms, setTestingSms] = useState(false);
+
+  const [loadingEmail, setLoadingEmail] = useState(false);
+  const [savingEmail, setSavingEmail] = useState(false);
+  const [testingEmail, setTestingEmail] = useState(false);
 
   const [logsLoading, setLogsLoading] = useState(false);
   const [logs, setLogs] = useState<DevLogsState | null>(null);
 
   const [backupLoading, setBackupLoading] = useState(false);
 
-  const isAllowed =
-    user &&
-    (user.email === 'dev@armico.local' || user.role === 'SUPER_ADMIN');
+  // доступ только для dev-аккаунта
+  const isAllowed = !!user && user.email === 'dev@armico.local';
 
   const authHeaders: Record<string, string> = token
     ? { Authorization: `Bearer ${token}` }
     : {};
+
+  // ----- SMS settings load -----
 
   const loadSmsSettings = async () => {
     try {
@@ -118,10 +135,54 @@ const DevPage = () => {
     }
   };
 
+  // ----- Email settings load -----
+
+  const loadEmailSettings = async () => {
+    try {
+      setLoadingEmail(true);
+      const res = await fetch(`${API_URL}/dev/email-settings`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders,
+        },
+      });
+
+      if (!res.ok) {
+        console.warn('Failed to load email settings', res.status);
+        return;
+      }
+
+      const data: {
+        enabled?: boolean;
+        host?: string | null;
+        port?: number | string | null;
+        secure?: boolean;
+        user?: string | null;
+        from?: string | null;
+      } = await res.json();
+
+      emailForm.setFieldsValue({
+        enabled: Boolean(data.enabled),
+        host: data.host ?? '',
+        port: data.port != null ? String(data.port) : '',
+        secure: data.secure ?? true,
+        user: data.user ?? '',
+        password: '',
+        from: data.from ?? '',
+      });
+    } catch (err) {
+      console.error(err);
+      message.error('Не удалось загрузить Email-настройки');
+    } finally {
+      setLoadingEmail(false);
+    }
+  };
+
   useEffect(() => {
     if (!isAllowed) return;
     void loadSmsSettings();
-  }, [isAllowed]); // плагина react-hooks может не быть, правило не используется
+    void loadEmailSettings();
+  }, [isAllowed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ----- SMS settings -----
 
@@ -181,6 +242,89 @@ const DevPage = () => {
       message.error('Ошибка при отправке тестового SMS');
     } finally {
       setTestingSms(false);
+    }
+  };
+
+  // ----- Email settings -----
+
+  const handleEmailSave = async (values: EmailSettingsForm) => {
+    try {
+      setSavingEmail(true);
+
+      const payload = {
+        enabled: Boolean(values.enabled),
+        host: values.host?.trim() || '',
+        port: values.port ? Number(values.port) : null,
+        secure: Boolean(values.secure),
+        user: values.user?.trim() || '',
+        password: values.password ?? '',
+        from: values.from?.trim() || '',
+      };
+
+      const res = await fetch(`${API_URL}/dev/email-settings`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to save email settings');
+      }
+
+      message.success('Email-настройки сохранены');
+    } catch (err) {
+      console.error(err);
+      message.error('Ошибка при сохранении Email-настроек');
+    } finally {
+      setSavingEmail(false);
+    }
+  };
+
+  const handleEmailTest = async () => {
+    try {
+      const values = emailForm.getFieldsValue();
+      const email = values.testEmail;
+
+      if (!email) {
+        message.warning('Укажи email для теста');
+        return;
+      }
+
+      setTestingEmail(true);
+      const res = await fetch(`${API_URL}/dev/test-email`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders,
+        },
+        body: JSON.stringify({ email }),
+      });
+
+      if (!res.ok) {
+        // пробуем вытащить message из ответа NestJS
+        try {
+          const data = (await res.json()) as { message?: string };
+          if (typeof data?.message === 'string' && data.message.trim()) {
+            message.error(data.message);
+            return;
+          }
+        } catch {
+          // если не json — идём вниз
+        }
+
+        message.error('Ошибка при отправке тестового письма');
+        return;
+      }
+
+      message.success('Тестовое письмо отправлено (если шлюз настроен)');
+    } catch (err) {
+      console.error(err);
+      message.error('Ошибка при отправке тестового письма');
+    } finally {
+      setTestingEmail(false);
     }
   };
 
@@ -257,7 +401,8 @@ const DevPage = () => {
       <Card>
         <Typography.Title level={3}>Доступ запрещён</Typography.Title>
         <Typography.Paragraph>
-          Эта страница доступна только для developer / SUPER_ADMIN аккаунта.
+          Эта страница доступна только для developer-аккаунта
+          (dev@armico.local).
         </Typography.Paragraph>
       </Card>
     );
@@ -322,6 +467,73 @@ const DevPage = () => {
               </Button>
               <Button onClick={handleSmsTest} loading={testingSms}>
                 Отправить тестовое SMS
+              </Button>
+            </Space>
+          </Form>
+        </Card>
+      ),
+    },
+    {
+      key: 'email',
+      label: 'Email настройки',
+      children: (
+        <Card loading={loadingEmail}>
+          <Form<EmailSettingsForm>
+            form={emailForm}
+            layout="vertical"
+            initialValues={{ enabled: false, secure: true }}
+            onFinish={handleEmailSave}
+          >
+            <Form.Item
+              name="enabled"
+              label="Включить email-уведомления"
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
+
+            <Form.Item name="host" label="SMTP host">
+              <Input placeholder="smtp.example.com" />
+            </Form.Item>
+
+            <Form.Item name="port" label="SMTP порт">
+              <Input placeholder="465 / 587" />
+            </Form.Item>
+
+            <Form.Item
+              name="secure"
+              label="Защищённое соединение (TLS/SSL)"
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
+
+            <Form.Item name="user" label="SMTP пользователь">
+              <Input placeholder="smtp-user@example.com" />
+            </Form.Item>
+
+            <Form.Item name="password" label="SMTP пароль">
+              <Input.Password placeholder="Пароль или токен" />
+            </Form.Item>
+
+            <Form.Item name="from" label="Адрес отправителя (From)">
+              <Input placeholder="noreply@armico.local" />
+            </Form.Item>
+
+            <Typography.Title level={5} style={{ marginTop: 24 }}>
+              Тестовое письмо
+            </Typography.Title>
+
+            <Form.Item name="testEmail" label="Email для теста">
+              <Input placeholder="test@example.com" />
+            </Form.Item>
+
+            <Space>
+              <Button type="primary" htmlType="submit" loading={savingEmail}>
+                Сохранить настройки
+              </Button>
+              <Button onClick={handleEmailTest} loading={testingEmail}>
+                Отправить тестовое письмо
               </Button>
             </Space>
           </Form>

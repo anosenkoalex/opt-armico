@@ -1,14 +1,26 @@
 import { z } from 'zod';
 import { UserRole } from '@prisma/client';
 
-export const CreateUserSchema = z.object({
-  fullName: z.string().min(2, 'Укажите ФИО'),
-  email: z.string().email('Некорректный e-mail'),
-  password: z.string().min(6, 'Минимум 6 символов'),
-  role: z.nativeEnum(UserRole).default(UserRole.USER),
+// Zod-схема для создания пользователя
+export const createUserSchema = z.object({
+  // E-mail обязателен и должен быть валидным
+  email: z.string().email(),
+
+  // Пароль опционален — если не передадут, сгенерим сами в сервисе
+  password: z.string().min(6).optional(),
+
+  // ФИО — опционально, просто строка
+  fullName: z.string().optional(),
+
+  // Должность (опционально)
   position: z.string().optional(),
+
+  // Телефон для SMS (опционально)
+  phone: z.string().optional(),
+
+  // Роль (SUPER_ADMIN / MANAGER / USER), по умолчанию потом можно подставить USER
+  role: z.nativeEnum(UserRole).optional(),
 });
 
-export const createUserSchema = CreateUserSchema;
-
-export type CreateUserDto = z.infer<typeof CreateUserSchema>;
+// Тип DTO берём из Zod-схемы
+export type CreateUserDto = z.infer<typeof createUserSchema>;

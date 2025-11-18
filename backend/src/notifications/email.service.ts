@@ -46,9 +46,24 @@ export class EmailService {
     return Boolean(this.host && this.port && this.user && this.pass);
   }
 
+  /**
+   * Статус email-шлюза (для Dev-консоли, если понадобится)
+   */
+  getSettings() {
+    return {
+      enabled: this.isConfigured,
+      host: this.host ?? null,
+      port: this.port ?? null,
+      user: this.user ?? null,
+      from: this.from,
+    };
+  }
+
   private async createSocket(): Promise<Socket> {
     if (!this.host || !this.port) {
-      throw new ServiceUnavailableException('Отправка email не настроена');
+      throw new ServiceUnavailableException(
+        'Отправка email пока не настроена (SMTP-шлюз не подключен)',
+      );
     }
 
     const useTls = this.port === 465;
@@ -149,7 +164,14 @@ export class EmailService {
     }
   }
 
-  private buildMessage(payload: AssignmentEmailPayload) {
+  private encodeSubject(subject: string) {
+    return `=?UTF-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`;
+  }
+
+  /**
+   * Собираем письмо для назначения
+   */
+  private buildAssignmentMessage(payload: AssignmentEmailPayload) {
     const formatter = new Intl.DateTimeFormat('ru-RU', {
       year: 'numeric',
       month: '2-digit',
@@ -157,8 +179,12 @@ export class EmailService {
     });
 
     const startsAt = formatter.format(payload.startsAt);
-    const endsAt = payload.endsAt ? formatter.format(payload.endsAt) : 'бессрочно';
-    const loginUrl = this.appUrl ? `${this.appUrl.replace(/\/$/, '')}/login` : '';
+    const endsAt = payload.endsAt
+      ? formatter.format(payload.endsAt)
+      : 'бессрочно';
+    const loginUrl = this.appUrl
+      ? `${this.appUrl.replace(/\/$/, '')}/login`
+      : '';
     const greetingName = payload.fullName?.trim() || payload.email;
     const workplaceName = payload.workplaceName?.trim()
       ? ` — ${payload.workplaceName.trim()}`
@@ -172,16 +198,20 @@ export class EmailService {
     ];
 
     if (loginUrl) {
-      lines.push('', 'Вы можете посмотреть подробности и свой график по ссылке:', loginUrl);
+      lines.push(
+        '',
+        'Вы можете посмотреть подробности и свой график по ссылке:',
+        loginUrl,
+      );
     }
 
-    lines.push('', 'Это письмо отправлено автоматически, отвечать на него не нужно.');
+    lines.push(
+      '',
+      'Это письмо отправлено автоматически, отвечать на него не нужно.',
+    );
 
     const textBody = lines.join('\n');
-    const encodedSubject = `=?UTF-8?B?${Buffer.from(
-      'Новое назначение в Armico',
-      'utf-8',
-    ).toString('base64')}?=`;
+    const encodedSubject = this.encodeSubject('Новое назначение в Armico');
 
     const headers = [
       `From: ${this.from}`,
@@ -193,12 +223,39 @@ export class EmailService {
       'Content-Transfer-Encoding: 8bit',
     ];
 
-    return `${headers.join('\r\n')}\r\n\r\n${textBody.replace(/\r?\n/g, '\r\n')}`;
+    return `${headers.join('\r\n')}\r\n\r\n${textBody.replace(
+      /\r?\n/g,
+      '\r\n',
+    )}`;
   }
 
-  async sendAssignmentNotification(payload: AssignmentEmailPayload) {
+  /**
+   * Универсальный билдер простого текстового письма
+   */
+  private buildPlainTextMessage(to: string, subject: string, body: string) {
+    const encodedSubject = this.encodeSubject(subject);
+
+    const headers = [
+      `From: ${this.from}`,
+      `To: ${to}`,
+      `Date: ${new Date().toUTCString()}`,
+      `Subject: ${encodedSubject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: 8bit',
+    ];
+
+    return `${headers.join('\r\n')}\r\n\r\n${body.replace(/\r?\n/g, '\r\n')}`;
+  }
+
+  /**
+   * Низкоуровневая отправка письма по SMTP
+   */
+  private async sendRawMail(to: string, rawMessage: string) {
     if (!this.isConfigured) {
-      throw new ServiceUnavailableException('Отправка email не настроена');
+      throw new ServiceUnavailableException(
+        'Отправка email пока не настроена (SMTP-шлюз не подключен)',
+      );
     }
 
     const socket = await this.createSocket();
@@ -237,7 +294,7 @@ export class EmailService {
         'MAIL FROM',
       );
       this.ensureResponse(
-        await this.sendCommand(socket, `RCPT TO:<${payload.email}>`),
+        await this.sendCommand(socket, `RCPT TO:<${to}>`),
         [250, 251],
         'RCPT TO',
       );
@@ -247,8 +304,7 @@ export class EmailService {
         'DATA command',
       );
 
-      const message = this.buildMessage(payload);
-      socket.write(`${message}\r\n.\r\n`);
+      socket.write(`${rawMessage}\r\n.\r\n`);
       this.ensureResponse(await this.readResponse(socket), [250], 'DATA send');
       this.ensureResponse(await this.sendCommand(socket, 'QUIT'), [221], 'QUIT');
     } catch (error) {
@@ -257,5 +313,39 @@ export class EmailService {
     } finally {
       socket.end();
     }
+  }
+
+  /**
+   * Уведомление о назначении
+   */
+  async sendAssignmentNotification(payload: AssignmentEmailPayload) {
+    const message = this.buildAssignmentMessage(payload);
+    await this.sendRawMail(payload.email, message);
+  }
+
+  /**
+   * Тестовое письмо (для Dev-консоли)
+   */
+  async sendTestEmail(email: string, text?: string) {
+    if (!this.isConfigured) {
+      throw new ServiceUnavailableException(
+        'Отправка email пока не настроена (SMTP-шлюз не подключен)',
+      );
+    }
+
+    const bodyLines = [
+      'Тестовое письмо из Armico.',
+      '',
+      text?.trim() ||
+        'Если вы видите это письмо, SMTP-настройки сохранены и соединение работает.',
+    ];
+
+    const message = this.buildPlainTextMessage(
+      email,
+      'Тестовое письмо из Armico',
+      bodyLines.join('\n'),
+    );
+
+    await this.sendRawMail(email, message);
   }
 }
