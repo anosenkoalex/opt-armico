@@ -1,395 +1,534 @@
+// frontend/src/pages/Planner.tsx
 import {
   Button,
   Card,
   DatePicker,
-  Empty,
-  Flex,
-  Pagination,
   Result,
   Select,
   Space,
-  Spin,
   Typography,
   message,
+  Tooltip,
+  Spin,
 } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import { useEffect, useMemo, useState } from 'react';
-import { useQuery, UseQueryResult } from '@tanstack/react-query';
+import { useMemo, useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+
 import {
-  downloadPlannerExcel,
+  AssignmentStatus,
   PlannerMatrixResponse,
   PlannerMatrixRow,
   PlannerMatrixSlot,
   fetchPlannerMatrix,
+  downloadPlannerExcel,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
 const { RangePicker } = DatePicker;
 
-const COLOR_PALETTE = [
-  '#1677ff',
-  '#13c2c2',
-  '#fa8c16',
-  '#eb2f96',
-  '#52c41a',
-  '#722ed1',
-  '#fa541c',
-  '#2f54eb',
-];
+type PlannerMode = 'byUsers' | 'byWorkplaces';
 
-type Mode = 'byUsers' | 'byWorkplaces';
+const CELL_WIDTH = 80;
+const ROW_HEIGHT = 36;
 
-const clampIndex = (value: number, max: number) => {
-  if (value < 0) return 0;
-  if (value > max) return max;
-  return value;
+const clampDateToRange = (d: Dayjs, from: Dayjs, to: Dayjs) => {
+  if (d.isBefore(from, 'day')) return from;
+  if (d.isAfter(to, 'day')) return to;
+  return d;
 };
+
+function buildLanes(
+  slots: PlannerMatrixSlot[],
+): { laneById: Record<string, number>; lanesCount: number } {
+  const sorted = [...slots].sort(
+    (a, b) => dayjs(a.from).valueOf() - dayjs(b.from).valueOf(),
+  );
+
+  const laneEndTimes: Dayjs[] = [];
+  const laneById: Record<string, number> = {};
+
+  for (const slot of sorted) {
+    const start = dayjs(slot.from);
+    let laneIndex = 0;
+
+    for (let i = 0; i < laneEndTimes.length; i++) {
+      if (
+        !laneEndTimes[i] ||
+        laneEndTimes[i].isSame(start) ||
+        laneEndTimes[i].isBefore(start)
+      ) {
+        laneIndex = i;
+        break;
+      }
+      laneIndex = laneEndTimes.length;
+    }
+
+    if (laneIndex === laneEndTimes.length) {
+      laneEndTimes.push(dayjs(slot.to ?? slot.from));
+    } else {
+      laneEndTimes[laneIndex] = dayjs(slot.to ?? slot.from);
+    }
+
+    laneById[slot.id] = laneIndex;
+  }
+
+  return { laneById, lanesCount: laneEndTimes.length || 1 };
+}
 
 const PlannerPage = () => {
   const { t } = useTranslation();
+  const { user } = useAuth();
 
-  // жёстко кастуем user к типу с id/role, чтобы TS не ныл на JwtPayload
-  const { user: rawUser, profile } = useAuth();
-  const user = rawUser as unknown as {
-    id?: string;
-    role?: 'SUPER_ADMIN' | 'USER';
-    email?: string;
-  } | null;
-
-  const [mode, setMode] = useState<Mode>('byUsers');
+  const [mode, setMode] = useState<PlannerMode>('byUsers');
   const [page, setPage] = useState(1);
-  const [range, setRange] = useState<[Dayjs, Dayjs]>([
-    dayjs().startOf('month'),
-    dayjs().endOf('month'),
-  ]);
-  const pageSize = 10;
+  const [pageSize] = useState(50);
 
-  const role = user?.role ?? 'USER';
-  const isSuperAdmin = role === 'SUPER_ADMIN';
-  const canView = role === 'SUPER_ADMIN' || role === 'USER';
-  const canPaginate = isSuperAdmin;
-  const canUseWorkplaceMode = isSuperAdmin || Boolean(profile?.org?.id);
+  const [fromDate, setFromDate] = useState<Dayjs | null>(null);
+  const [toDate, setToDate] = useState<Dayjs | null>(null);
+  const [autoRangeInitialized, setAutoRangeInitialized] = useState(false);
 
-  useEffect(() => {
-    if (mode === 'byWorkplaces' && !canUseWorkplaceMode) {
-      setMode('byUsers');
-    }
-  }, [mode, canUseWorkplaceMode]);
+  const canViewPlanner =
+    user?.role === 'SUPER_ADMIN' || user?.role === 'MANAGER';
 
-  const query: UseQueryResult<PlannerMatrixResponse, Error> =
-    useQuery<PlannerMatrixResponse, Error>({
-      queryKey: [
-        'planner-matrix',
+  const effectiveFrom = fromDate ?? dayjs().startOf('month');
+  const effectiveTo = toDate ?? dayjs().endOf('month');
+
+  // показываем только ACTIVE
+  const statusFilter: AssignmentStatus = 'ACTIVE';
+
+  const matrixQuery = useQuery<PlannerMatrixResponse>({
+    queryKey: [
+      'planner-matrix',
+      {
         mode,
-        canPaginate ? page : 1,
-        range[0]?.toISOString(),
-        range[1]?.toISOString(),
-        role,
-        profile?.org?.id ?? null,
-        user?.id ?? null,
-      ],
-      queryFn: async () => {
-        const [fromRaw, toRaw] = range;
-
-        if (!fromRaw || !toRaw) {
-          throw new Error('Invalid range');
-        }
-
-        const params: Parameters<typeof fetchPlannerMatrix>[0] = {
-          mode,
-          from: fromRaw.startOf('day').toISOString(),
-          to: toRaw.endOf('day').toISOString(),
-          page: canPaginate ? page : 1,
-          pageSize: canPaginate ? pageSize : undefined,
-          userId: undefined,
-          orgId: undefined,
-        };
-
-        if (!isSuperAdmin && user?.id) {
-          params.userId = user.id;
-        }
-
-        if (!isSuperAdmin && profile?.org?.id) {
-          params.orgId = profile.org.id;
-        }
-
-        return fetchPlannerMatrix(params);
+        from: effectiveFrom.toISOString(),
+        to: effectiveTo.toISOString(),
+        page,
+        pageSize,
+        status: statusFilter,
       },
-      enabled: canView,
-    });
+    ],
+    queryFn: () =>
+      fetchPlannerMatrix({
+        mode,
+        from: effectiveFrom.toISOString(),
+        to: effectiveTo.toISOString(),
+        page,
+        pageSize,
+        status: statusFilter,
+      }),
+    enabled: canViewPlanner,
+    keepPreviousData: true,
+  });
 
-  const days = useMemo<Dayjs[]>(() => {
-    if (!query.data) {
-      return [];
-    }
+  const matrix = matrixQuery.data;
 
-    const start = dayjs(query.data.from).startOf('day');
-    const end = dayjs(query.data.to).startOf('day');
+  // один раз после загрузки – сдвигаем диапазон на первую дату назначения
+  useEffect(() => {
+    if (!matrix || autoRangeInitialized) return;
+    if (!matrix.rows || matrix.rows.length === 0) return;
 
-    const result: Dayjs[] = [];
-    let current = start;
+    let minStart: Dayjs | null = null;
+    let maxEnd: Dayjs | null = null;
 
-    while (current.isSame(end) || current.isBefore(end)) {
-      result.push(current);
-      current = current.add(1, 'day');
-    }
-
-    return result;
-  }, [query.data]);
-
-  const colorMap = useMemo(() => {
-    if (!query.data) {
-      return new Map<string, string>();
-    }
-
-    const map = new Map<string, string>();
-    let index = 0;
-
-    for (const row of query.data.rows) {
+    for (const row of matrix.rows) {
       for (const slot of row.slots) {
-        if (!slot.code) continue;
-
-        if (!map.has(slot.code)) {
-          map.set(slot.code, COLOR_PALETTE[index % COLOR_PALETTE.length]);
-          index += 1;
+        if (slot.status === 'ARCHIVED') continue; // подстрахуемся
+        const start = dayjs(slot.from);
+        const end = dayjs(slot.to ?? slot.from);
+        if (!minStart || start.isBefore(minStart)) {
+          minStart = start;
+        }
+        if (!maxEnd || end.isAfter(maxEnd)) {
+          maxEnd = end;
         }
       }
     }
 
-    return map;
-  }, [query.data]);
+    if (minStart) {
+      const proposedFrom = minStart.startOf('day');
+      const proposedTo = maxEnd
+        ? maxEnd.endOf('day')
+        : proposedFrom.add(30, 'day').endOf('day');
 
-  const gridTemplate = useMemo(
-    () => ({
-      gridTemplateColumns: `repeat(${Math.max(
-        days.length,
-        1,
-      )}, minmax(80px, 1fr))`,
-    }),
-    [days.length],
-  );
+      setFromDate(proposedFrom);
+      setToDate(proposedTo);
+      setAutoRangeInitialized(true);
+    }
+  }, [matrix, autoRangeInitialized]);
 
-  const renderSlot = (
-    slot: PlannerMatrixSlot,
-    matrix: PlannerMatrixResponse,
-  ) => {
-    if (days.length === 0) {
-      return null;
+  const days = useMemo(() => {
+    if (!fromDate || !toDate) return [];
+    const list: Dayjs[] = [];
+    let current = fromDate.startOf('day');
+    const last = toDate.startOf('day');
+
+    while (current.isBefore(last) || current.isSame(last, 'day')) {
+      list.push(current);
+      current = current.add(1, 'day');
     }
 
-    const rangeStart = days[0];
-    const slotStart = dayjs(slot.from).startOf('day');
-    const slotEnd = slot.to
-      ? dayjs(slot.to).startOf('day')
-      : dayjs(matrix.to).startOf('day');
+    return list;
+  }, [fromDate, toDate]);
 
-    const maxIndex = days.length - 1;
-    const startIndex = clampIndex(slotStart.diff(rangeStart, 'day'), maxIndex);
-    const endIndex = clampIndex(slotEnd.diff(rangeStart, 'day'), maxIndex);
-
-    if (endIndex < 0 || startIndex > maxIndex) {
-      return null;
-    }
-
-    const color = colorMap.get(slot.code) ?? COLOR_PALETTE[0];
-    const gridColumn = `${startIndex + 1} / ${endIndex + 2}`;
-    const subtitle =
-      mode === 'byWorkplaces'
-        ? slot.user?.fullName || slot.user?.email || ''
-        : slot.workplace
-        ? `${slot.workplace.code}${
-            slot.workplace.name ? ` — ${slot.workplace.name}` : ''
-          }`
-        : slot.org?.slug?.toUpperCase() ?? slot.name;
-
-    return (
-      <div
-        key={slot.id}
-        className="planner-slot"
-        style={{ gridColumn, gridRow: '1' }}
-        title={slot.name}
-      >
-        <div
-          className="planner-slot-content"
-          style={{
-            borderColor: color,
-            backgroundColor: `${color}22`,
-          }}
-        >
-          <Typography.Text style={{ color }} strong>
-            {slot.code}
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            {`${dayjs(slot.from).format('DD.MM')} — ${
-              slot.to ? dayjs(slot.to).format('DD.MM') : t('planner.openEnded')
-            }`}
-          </Typography.Text>
-          {subtitle ? (
-            <Typography.Text type="secondary">{subtitle}</Typography.Text>
-          ) : null}
-        </div>
-      </div>
-    );
-  };
-
-  const handleDownload = async () => {
-    const [fromRaw, toRaw] = range;
-
-    if (!fromRaw || !toRaw) {
+  const handleDownloadExcel = async () => {
+    if (!fromDate || !toDate) {
+      message.warning(
+        t(
+          'planner.selectPeriodFirst',
+          'Сначала выберите период, который хотите выгрузить',
+        ),
+      );
       return;
     }
 
     try {
-      const params: Parameters<typeof downloadPlannerExcel>[0] = {
-        from: fromRaw.startOf('day').toISOString(),
-        to: toRaw.endOf('day').toISOString(),
+      const blob = await downloadPlannerExcel({
+        from: fromDate.toISOString(),
+        to: toDate.toISOString(),
         mode: mode === 'byUsers' ? 'users' : 'workplaces',
-        userId: undefined,
-        orgId: undefined,
-      };
+        status: statusFilter,
+      });
 
-      if (!isSuperAdmin && user?.id) {
-        params.userId = user.id;
-      }
-
-      if (!isSuperAdmin && profile?.org?.id) {
-        params.orgId = profile.org.id;
-      }
-
-      const blob = await downloadPlannerExcel(params);
       const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'schedule.xlsx';
-      link.click();
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `planner-${mode}-${dayjs().format(
+        'YYYY-MM-DD_HH-mm-ss',
+      )}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error(error);
-      message.error(t('planner.downloadError'));
+      message.error(
+        t('planner.exportError', 'Не удалось скачать файл планировщика'),
+      );
     }
   };
 
-  if (!canView) {
+  if (!canViewPlanner) {
     return <Result status="403" title={t('admin.accessDenied')} />;
   }
 
+  const totalLabel =
+    mode === 'byUsers'
+      ? t('planner.totalEmployees', 'Сотрудников в выборке')
+      : t('planner.totalWorkplaces', 'Рабочих мест в выборке');
+
   return (
-    <Flex vertical gap={16}>
-      <Card>
-        <Flex gap={12} align="center" wrap>
+    <Card
+      title={t('planner.title', 'Планировщик')}
+      extra={
+        <Space>
           <Select
+            style={{ width: 180 }}
             value={mode}
-            onChange={(value: Mode) => {
+            onChange={(value: PlannerMode) => {
               setMode(value);
               setPage(1);
             }}
             options={[
-              { value: 'byUsers', label: t('planner.mode.users') },
-              ...(canUseWorkplaceMode
-                ? [
-                    {
-                      value: 'byWorkplaces',
-                      label: t('planner.mode.workplaces'),
-                    },
-                  ]
-                : []),
+              {
+                value: 'byUsers',
+                label: t('planner.byUsers', 'По сотрудникам'),
+              },
+              {
+                value: 'byWorkplaces',
+                label: t('planner.byWorkplaces', 'По рабочим местам'),
+              },
             ]}
           />
           <RangePicker
-            value={range}
-            onChange={(value) => {
-              if (!value || value.length !== 2 || !value[0] || !value[1]) {
+            value={fromDate && toDate ? [fromDate, toDate] : undefined}
+            format="DD.MM.YYYY"
+            onChange={(values) => {
+              if (!values || !values[0] || !values[1]) {
+                setFromDate(null);
+                setToDate(null);
+                setPage(1);
                 return;
               }
-              setRange([value[0], value[1]]);
+              setFromDate(values[0].startOf('day'));
+              setToDate(values[1].endOf('day'));
               setPage(1);
             }}
-            allowClear={false}
-            format="DD.MM.YYYY"
           />
-          <Space>
-            <Button icon={<DownloadOutlined />} onClick={handleDownload}>
-              {t('planner.download')}
-            </Button>
-            {query.isFetching && <Spin size="small" />}
-          </Space>
-        </Flex>
-      </Card>
+          <Button icon={<DownloadOutlined />} onClick={handleDownloadExcel}>
+            {t('planner.downloadExcel', 'Скачать Excel')}
+          </Button>
+        </Space>
+      }
+    >
+      {/* 🔹 Короткая сводка по выборке */}
+      {matrix && (
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          {totalLabel}: <strong>{matrix.total}</strong>.{' '}
+          {t(
+            'planner.periodSummary',
+            'Период',
+          )}{' '}
+          <strong>{dayjs(matrix.from).format('DD.MM.YYYY')}</strong> —{' '}
+          <strong>{dayjs(matrix.to).format('DD.MM.YYYY')}</strong>.
+        </Typography.Paragraph>
+      )}
 
-      <Card>
-        {query.isLoading ? (
-          <Flex justify="center" className="py-12">
-            <Spin />
-          </Flex>
-        ) : !query.data || query.data.rows.length === 0 ? (
-          <Empty description={t('planner.noData')} />
-        ) : (
-          <div className="planner-table">
-            <div className="planner-header">
-              <div className="planner-info-cell">
-                <Typography.Text type="secondary">
-                  {mode === 'byUsers'
-                    ? t('planner.columns.employee')
-                    : t('planner.columns.workplace')}
-                </Typography.Text>
-              </div>
-              <div
-                className="planner-grid planner-grid-header"
-                style={gridTemplate}
-              >
-                {days.map((day) => (
-                  <div key={day.toISOString()} className="planner-grid-cell">
-                    <Typography.Text type="secondary">
-                      {day.format('DD.MM')}
-                    </Typography.Text>
-                  </div>
-                ))}
-              </div>
+      {matrixQuery.isLoading && (
+        <div
+          style={{
+            padding: 40,
+            display: 'flex',
+            justifyContent: 'center',
+          }}
+        >
+          <Spin />
+        </div>
+      )}
+
+      {!matrixQuery.isLoading && (!matrix || matrix.rows.length === 0) && (
+        <Typography.Text type="secondary">
+          {t('planner.noData', 'Нет данных для выбранного периода')}
+        </Typography.Text>
+      )}
+
+      {!!matrix && matrix.rows.length > 0 && fromDate && toDate && (
+        <div
+          style={{
+            marginTop: 16,
+            border: '1px solid #f0f0f0',
+            borderRadius: 8,
+            overflowX: 'auto',
+          }}
+        >
+          {/* заголовок с датами */}
+          <div
+            style={{
+              display: 'flex',
+              borderBottom: '1px solid #f0f0f0',
+              background: '#fafafa',
+            }}
+          >
+            <div
+              style={{
+                flex: '0 0 260px',
+                padding: '8px 12px',
+                borderRight: '1px solid #f0f0f0',
+                fontWeight: 500,
+              }}
+            >
+              {mode === 'byUsers'
+                ? t('planner.employee', 'Сотрудник')
+                : t('planner.workplace', 'Рабочее место')}
             </div>
-
-            {query.data.rows.map((row: PlannerMatrixRow) => (
-              <div key={row.key} className="planner-row">
-                <div className="planner-info-cell">
-                  <Typography.Text strong>{row.title}</Typography.Text>
-                  {row.subtitle ? (
-                    <Typography.Text type="secondary">
-                      {row.subtitle}
-                    </Typography.Text>
-                  ) : null}
-                </div>
+            <div
+              style={{
+                flex: 1,
+                minWidth: days.length * CELL_WIDTH,
+                display: 'grid',
+                gridTemplateColumns: `repeat(${days.length}, ${CELL_WIDTH}px)`,
+              }}
+            >
+              {days.map((d) => (
                 <div
-                  className="planner-grid planner-grid-body"
-                  style={gridTemplate}
+                  key={d.toISOString()}
+                  style={{
+                    padding: '8px 4px',
+                    textAlign: 'center',
+                    fontSize: 12,
+                    borderLeft: '1px solid #f5f5f5',
+                  }}
                 >
-                  {row.slots.map((slot) => renderSlot(slot, query.data!))}
-                  {row.slots.length === 0 ? (
-                    <div className="planner-empty-row">
-                      <Typography.Text type="secondary">
-                        {t('planner.noSlots')}
-                      </Typography.Text>
+                  {d.format('DD.MM')}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* строки */}
+          {matrix.rows.map((row: PlannerMatrixRow) => {
+            // убираем слоты в ARCHIVED
+            const visibleSlots = row.slots.filter(
+              (s) => s.status !== 'ARCHIVED',
+            );
+
+            const { laneById, lanesCount } = buildLanes(visibleSlots);
+
+            return (
+              <div
+                key={row.key}
+                style={{
+                  display: 'flex',
+                  borderBottom: '1px solid #f0f0f0',
+                }}
+              >
+                <div
+                  style={{
+                    flex: '0 0 260px',
+                    padding: '8px 12px',
+                    borderRight: '1px solid #f0f0f0',
+                  }}
+                >
+                  <Typography.Text strong>{row.title}</Typography.Text>
+                  {row.subtitle && (
+                    <div style={{ fontSize: 12, color: '#888' }}>
+                      {row.subtitle}
                     </div>
-                  ) : null}
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    position: 'relative',
+                    flex: 1,
+                    minWidth: days.length * CELL_WIDTH,
+                    padding: 8,
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  {/* сетка по дням */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 8,
+                      display: 'grid',
+                      gridTemplateColumns: `repeat(${days.length}, ${CELL_WIDTH}px)`,
+                      gridAutoRows: ROW_HEIGHT,
+                    }}
+                  >
+                    {days.map((d) => (
+                      <div
+                        key={d.toISOString()}
+                        style={{
+                          borderLeft: '1px solid #f5f5f5',
+                        }}
+                      />
+                    ))}
+                  </div>
+
+                  {/* сами прямоугольники назначений */}
+                  {visibleSlots.map((slot: PlannerMatrixSlot) => {
+                    const lane = laneById[slot.id] ?? 0;
+
+                    const slotStart = clampDateToRange(
+                      dayjs(slot.from),
+                      fromDate,
+                      toDate,
+                    );
+                    const slotEnd = clampDateToRange(
+                      dayjs(slot.to ?? slot.from),
+                      fromDate,
+                      toDate,
+                    );
+
+                    const startIndex = slotStart
+                      .startOf('day')
+                      .diff(fromDate.startOf('day'), 'day');
+                    const endIndex =
+                      slotEnd
+                        .startOf('day')
+                        .diff(fromDate.startOf('day'), 'day') + 1;
+
+                    const left = startIndex * CELL_WIDTH;
+                    const width = Math.max(
+                      (endIndex - startIndex) * CELL_WIDTH - 4,
+                      24,
+                    );
+
+                    // интервал для одного дня
+                    const baseStartTime = dayjs(slot.from).format('HH:mm');
+                    const baseEndTime = slot.to
+                      ? dayjs(slot.to).format('HH:mm')
+                      : '';
+
+                    // список по дням: ДД.ММ: HH:mm–HH:mm
+                    const perDayLines: string[] = [];
+                    let dayCursor = slotStart.startOf('day');
+                    const lastDay = slotEnd.startOf('day');
+                    while (
+                      dayCursor.isBefore(lastDay) ||
+                      dayCursor.isSame(lastDay, 'day')
+                    ) {
+                      perDayLines.push(
+                        `${dayCursor.format('DD.MM')}: ${baseStartTime}–${
+                          baseEndTime || '...'
+                        }`,
+                      );
+                      dayCursor = dayCursor.add(1, 'day');
+                    }
+
+                    const tooltipTitle = (
+                      <div>
+                        <div>
+                          <strong>
+                            {slot.workplace?.code
+                              ? `${slot.workplace.code} — ${slot.workplace.name}`
+                              : slot.workplace?.name ?? row.title}
+                          </strong>
+                        </div>
+                        <div>
+                          {t('planner.period', 'Период')}:&nbsp;
+                          {slotStart.format('DD.MM.YYYY')} —{' '}
+                          {slotEnd.format('DD.MM.YYYY')}
+                        </div>
+                        <div style={{ marginTop: 4 }}>
+                          {t(
+                            'planner.dailyIntervals',
+                            'Интервалы по дням:',
+                          )}
+                        </div>
+                        {perDayLines.map((line) => (
+                          <div key={line}>{line}</div>
+                        ))}
+                      </div>
+                    );
+
+                    return (
+                      <Tooltip key={slot.id} title={tooltipTitle}>
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 8 + lane * ROW_HEIGHT,
+                            left,
+                            width,
+                            height: ROW_HEIGHT - 6,
+                            borderRadius: 6,
+                            background: '#e6f7ff',
+                            border: '1px solid #91d5ff',
+                            padding: '4px 6px',
+                            boxSizing: 'border-box',
+                            overflow: 'hidden',
+                            whiteSpace: 'nowrap',
+                            textOverflow: 'ellipsis',
+                            cursor: 'default',
+                          }}
+                        >
+                          <span style={{ fontSize: 12 }}>
+                            {slot.code
+                              ? `${slot.code} — ${slot.name}`
+                              : slot.name ?? ''}
+                          </span>
+                        </div>
+                      </Tooltip>
+                    );
+                  })}
+
+                  {/* высота под все “дорожки” */}
+                  <div
+                    style={{
+                      height: lanesCount * ROW_HEIGHT + 16,
+                    }}
+                  />
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-
-        {canPaginate && query.data ? (
-          <Flex justify="end" className="mt-4">
-            <Pagination
-              current={page}
-              pageSize={pageSize}
-              total={query.data.total}
-              onChange={(nextPage) => setPage(nextPage)}
-              showSizeChanger={false}
-            />
-          </Flex>
-        ) : null}
-      </Card>
-    </Flex>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 };
 

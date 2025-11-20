@@ -90,7 +90,7 @@ export type Assignment = {
     fullName?: string | null;
   };
   workplace?: Pick<Workplace, 'id' | 'code' | 'name' | 'location'>;
-  // 👇 теперь с сменами
+  // 👇 смены
   shifts?: AssignmentShift[];
 };
 
@@ -367,7 +367,7 @@ export const fetchAssignments = async (params: {
 };
 
 /**
- * Список назначений в корзине (isDeleted = true)
+ * Список назначений в корзине (deletedAt != null)
  */
 export const fetchAssignmentsFromTrash = async (params: {
   userId?: string;
@@ -446,6 +446,52 @@ export const deleteAssignment = async (id: string) => {
 export const restoreAssignment = async (id: string) => {
   const { data } = await api.post<Assignment>(`/assignments/${id}/restore`);
   return data;
+};
+
+/**
+ * 📥 Скачать назначения из корзины (по списку id) в виде файла (Excel/CSV).
+ * Бэк должен вернуть Excel / CSV (application/vnd.*), а мы принимаем как Blob.
+ * Ручка: POST /assignments/trash/export (body: { ids: string[] })
+ */
+export const exportTrashAssignments = async (ids: string[]) => {
+  const response = await api.post(
+    '/assignments/trash/export',
+    { ids },
+    {
+      responseType: 'blob',
+    },
+  );
+
+  return response.data as Blob;
+};
+
+/**
+ * 🗑️ Окончательно удалить назначения из корзины (hard delete).
+ * Ручка: POST /assignments/trash/delete (body: { ids: string[] })
+ */
+export const hardDeleteTrashAssignments = async (ids: string[]) => {
+  const { data } = await api.post<{ deletedCount: number }>(
+    '/assignments/trash/delete',
+    { ids },
+  );
+  return data;
+};
+
+/**
+ * 📥🗑️ Экспортировать и сразу удалить (export + hard delete).
+ * Бэк возвращает файл (Excel/CSV), мы принимаем как Blob.
+ * Ручка: POST /assignments/trash/export-and-delete (body: { ids: string[] })
+ */
+export const exportAndHardDeleteTrashAssignments = async (ids: string[]) => {
+  const response = await api.post(
+    '/assignments/trash/export-and-delete',
+    { ids },
+    {
+      responseType: 'blob',
+    },
+  );
+
+  return response.data as Blob;
 };
 
 export const fetchUsers = async (params: {
@@ -547,7 +593,11 @@ export const confirmMySlot = async (slotId: string) => {
   return data;
 };
 
-export const requestSlotSwap = async (
+/**
+ * Запрос корректировки / обмена слота (day off, смена времени и т.п.)
+ * Бэк: POST /me/slots/:slotId/request-swap
+ */
+export const requestSlotAdjustment = async (
   slotId: string,
   payload: { comment: string },
 ) => {
@@ -557,6 +607,9 @@ export const requestSlotSwap = async (
   );
   return data;
 };
+
+// старое имя для совместимости с существующим кодом
+export const requestSlotSwap = requestSlotAdjustment;
 
 export const decodeToken = (token: string): JwtPayload | null => {
   try {

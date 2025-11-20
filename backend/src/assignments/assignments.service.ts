@@ -19,13 +19,35 @@ import { NotificationsService } from '../notifications/notifications.service.js'
 import { EmailService } from '../notifications/email.service.js';
 import { SmsService } from '../sms/sms.service.js';
 
+type AdjustmentStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+type RequestScheduleAdjustmentPayload = {
+  date: string;
+  startsAt?: string;
+  endsAt?: string;
+  kind?: ShiftKind | string;
+  comment: string;
+};
+
+type ListScheduleAdjustmentsParams = {
+  page?: number;
+  pageSize?: number;
+  status?: AdjustmentStatus;
+  userId?: string;
+  assignmentId?: string;
+};
+
+type ScheduleAdjustmentDecisionPayload = {
+  managerComment?: string;
+};
+
 @Injectable()
 export class AssignmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly email: EmailService,
-    private readonly smsService: SmsService,
+  private readonly smsService: SmsService,
   ) {}
 
   /**
@@ -820,5 +842,342 @@ export class AssignmentsService {
       orderBy: { startsAt: 'desc' },
       take,
     });
+  }
+
+  /**
+   * 📥 Экспорт назначений из корзины по списку id.
+   * Возвращаем JSON, фронт сам делает таблицу/Excel/CSV.
+   */
+  async exportFromTrash(ids: string[]) {
+    if (!ids.length) {
+      return [];
+    }
+
+    const items = await this.prisma.assignment.findMany({
+      where: {
+        id: { in: ids },
+        deletedAt: { not: null },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            position: true,
+          },
+        },
+        workplace: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            location: true,
+          },
+        },
+        shifts: true,
+      },
+      orderBy: { startsAt: 'desc' },
+    });
+
+    return items;
+  }
+
+  /**
+   * 🗑 Окончательное удаление назначений из корзины (hard delete).
+   */
+  async bulkDeleteFromTrash(ids: string[]) {
+    if (!ids.length) {
+      return { deletedCount: 0 };
+    }
+
+    const result = await this.prisma.assignment.deleteMany({
+      where: {
+        id: { in: ids },
+        deletedAt: { not: null },
+      },
+    });
+
+    return { deletedCount: result.count };
+  }
+
+  /**
+   * 📥 + 🗑 Экспорт + удаление:
+   *  - достаём объекты
+   *  - удаляем их из БД
+   *  - возвращаем данные на фронт
+   */
+  async exportAndDeleteFromTrash(ids: string[]) {
+    if (!ids.length) {
+      return [];
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const items = await tx.assignment.findMany({
+        where: {
+          id: { in: ids },
+          deletedAt: { not: null },
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              fullName: true,
+              position: true,
+            },
+          },
+          workplace: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              location: true,
+            },
+          },
+          shifts: true,
+        },
+        orderBy: { startsAt: 'desc' },
+      });
+
+      if (!items.length) {
+        return [];
+      }
+
+      await tx.assignment.deleteMany({
+        where: {
+          id: { in: items.map((a) => a.id) },
+          deletedAt: { not: null },
+        },
+      });
+
+      return items;
+    });
+  }
+
+  // ============================================================
+  //      🔔 ЗАПРОСЫ НА КОРРЕКТИРОВКУ РАСПИСАНИЯ
+  // ============================================================
+
+  /**
+   * Нормализуем дату: поддерживаем как ISO, так и просто YYYY-MM-DD.
+   */
+  private parseDateOnly(dateStr: string): Date {
+    const iso =
+      /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? `${dateStr}T00:00:00.000Z` : dateStr;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException('Некорректная дата корректировки');
+    }
+    return d;
+  }
+
+  /**
+   * 📝 Пользователь подаёт запрос на корректировку по назначению.
+   *
+   * Пока что это просто запись в отдельную таблицу + нотификации.
+   * Автоматически сами смены мы НЕ правим (это можно будет добавить позже,
+   * когда утрясём логику статистики).
+   */
+  async requestScheduleAdjustment(
+    assignmentId: string,
+    payload: RequestScheduleAdjustmentPayload,
+  ) {
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id: assignmentId },
+      include: {
+        user: {
+          select: { id: true, orgId: true },
+        },
+        workplace: {
+          select: { id: true, orgId: true, code: true, name: true },
+        },
+      },
+    });
+
+    if (!assignment || assignment.deletedAt) {
+      throw new NotFoundException('Назначение не найдено');
+    }
+
+    if (!assignment.user) {
+      throw new BadRequestException('У назначения не найден сотрудник');
+    }
+
+    const date = this.parseDateOnly(payload.date);
+    const startsAt = payload.startsAt ? new Date(payload.startsAt) : null;
+    const endsAt = payload.endsAt ? new Date(payload.endsAt) : null;
+
+    const kind: ShiftKind =
+      (payload.kind as ShiftKind) ?? ShiftKind.DAY_OFF;
+
+    const adjustment = await this.prisma.assignmentAdjustment.create({
+      data: {
+        assignmentId: assignment.id,
+        userId: assignment.userId,
+        date,
+        startsAt,
+        endsAt,
+        kind,
+        comment: payload.comment.trim(),
+        status: 'PENDING',
+      } as any,
+    });
+
+    // Уведомляем участника + админов организации,
+    // чтобы у менеджера/супера в колокольчике появился запрос.
+    const orgId =
+      assignment.workplace?.orgId ?? assignment.user.orgId ?? null;
+
+    if (orgId) {
+      const recipients = await this.resolveRecipients(
+        assignment.userId,
+        orgId,
+      );
+
+      await this.notifications.notifyMany(
+        recipients,
+        NotificationType.ASSIGNMENT_UPDATED,
+        {
+          assignmentId: assignment.id,
+          userId: assignment.userId,
+          workplaceId: assignment.workplaceId,
+          adjustmentId: adjustment.id,
+          adjustmentType: 'REQUESTED',
+        },
+      );
+    }
+
+    return adjustment;
+  }
+
+  /**
+   * 📋 Список запросов корректировок для менеджера/админа.
+   */
+  async listScheduleAdjustments(params: ListScheduleAdjustmentsParams) {
+    const page = params.page ?? 1;
+    const pageSize = params.pageSize ?? 20;
+
+    const where: any = {};
+
+    if (params.status) {
+      where.status = params.status;
+    }
+    if (params.userId) {
+      where.userId = params.userId;
+    }
+    if (params.assignmentId) {
+      where.assignmentId = params.assignmentId;
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.assignmentAdjustment.findMany({
+        where,
+        include: {
+          assignment: {
+            include: {
+              workplace: {
+                select: { id: true, code: true, name: true },
+              },
+              user: {
+                select: { id: true, fullName: true, email: true },
+              },
+            },
+          },
+          user: {
+            select: { id: true, fullName: true, email: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }) as any,
+      this.prisma.assignmentAdjustment.count({ where }) as any,
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * ✅ / ❌ Решение по запросу корректировки.
+   *
+   * Сейчас:
+   *  - меняем статус PENDING → APPROVED / REJECTED
+   *  - сохраняем комментарий менеджера
+   *  - шлём нотификации
+   *
+   * В будущем сюда можно добавить автопроставление DAY_OFF и т.п.
+   */
+  async decideScheduleAdjustment(
+    adjustmentId: string,
+    decision: AdjustmentStatus,
+    payload: ScheduleAdjustmentDecisionPayload,
+  ) {
+    if (decision !== 'APPROVED' && decision !== 'REJECTED') {
+      throw new BadRequestException('Некорректный статус решения');
+    }
+
+    const adjustment = await this.prisma.assignmentAdjustment.findUnique({
+      where: { id: adjustmentId },
+      include: {
+        assignment: {
+          include: {
+            workplace: { select: { id: true, orgId: true, code: true, name: true } },
+            user: { select: { id: true, orgId: true } },
+          },
+        },
+        user: {
+          select: { id: true, email: true, fullName: true },
+        },
+      },
+    });
+
+    if (!adjustment) {
+      throw new NotFoundException('Запрос корректировки не найден');
+    }
+
+    if (adjustment.status !== 'PENDING') {
+      throw new BadRequestException('По этому запросу уже принято решение');
+    }
+
+    const updated = await this.prisma.assignmentAdjustment.update({
+      where: { id: adjustmentId },
+      data: {
+        status: decision,
+        managerComment: payload.managerComment ?? null,
+      } as any,
+    });
+
+    const assignment = adjustment.assignment;
+    const orgId =
+      assignment?.workplace?.orgId ?? assignment?.user?.orgId ?? null;
+
+    if (orgId && assignment) {
+      const recipients = await this.resolveRecipients(
+        assignment.userId,
+        orgId,
+      );
+
+      await this.notifications.notifyMany(
+        recipients,
+        NotificationType.ASSIGNMENT_UPDATED,
+        {
+          assignmentId: assignment.id,
+          userId: assignment.userId,
+          workplaceId: assignment.workplaceId,
+          adjustmentId: adjustment.id,
+          adjustmentType:
+            decision === 'APPROVED'
+              ? 'APPROVED'
+              : 'REJECTED',
+        },
+      );
+    }
+
+    return updated;
   }
 }

@@ -69,7 +69,6 @@ const AppLayout = () => {
           path: '/users',
           label: t('layout.users'),
         },
-        // 📊 Статистика (отдельная страница, логически под сотрудниками)
         {
           key: 'statistics',
           path: '/statistics',
@@ -78,7 +77,7 @@ const AppLayout = () => {
       );
     }
 
-    // 🔧 Dev-панель ТОЛЬКО для dev@armico.local, админ её не видит
+    // Dev-панель только для dev@armico.local
     if (isDevUser) {
       items.push({
         key: 'dev',
@@ -108,7 +107,11 @@ const AppLayout = () => {
   const notifications = notificationsQuery.data ?? [];
 
   const notificationsOverlay = (
-    <div className="w-80 max-h-80 overflow-y-auto px-3 py-2">
+    <div className="w-96 max-h-80 bg-white rounded-lg shadow-lg px-4 py-3 overflow-y-auto">
+      <Typography.Title level={5} style={{ marginBottom: 8 }}>
+        {t('notifications.title', 'Уведомления')}
+      </Typography.Title>
+
       {notificationsQuery.isLoading ? (
         <Typography.Text type="secondary">
           {t('common.loading')}
@@ -119,25 +122,90 @@ const AppLayout = () => {
         </Typography.Text>
       ) : (
         notifications.map((item) => {
-          const workplace =
-            (item.payload?.workplaceName as string | undefined) ??
-            (item.payload?.workplaceCode as string | undefined) ??
+          const createdAt = dayjs(item.createdAt).format('DD.MM.YYYY HH:mm');
+
+          const employeeName =
+            (item.payload?.userFullName as string | undefined) ??
+            (item.payload?.userEmail as string | undefined) ??
             '';
-          const date = dayjs(item.createdAt).format('DD.MM.YYYY HH:mm');
-          const key =
-            item.type === 'ASSIGNMENT_CREATED'
-              ? 'notifications.created'
-              : item.type === 'ASSIGNMENT_MOVED'
-                ? 'notifications.moved'
-                : item.type === 'ASSIGNMENT_CANCELLED'
-                  ? 'notifications.cancelled'
-                  : 'notifications.updated';
+
+          const workplaceCode =
+            (item.payload?.workplaceCode as string | undefined) ?? '';
+          const workplaceName =
+            (item.payload?.workplaceName as string | undefined) ?? '';
+
+          const workplaceLabel = [workplaceCode, workplaceName]
+            .filter(Boolean)
+            .join(' — ');
+
+          let title = '';
+          let description: string | null = null;
+
+          // Базовые типы уведомлений по назначениям
+          if (item.type === 'ASSIGNMENT_CREATED') {
+            title = t(
+              'notifications.assignmentCreatedShort',
+              'Новое назначение',
+            );
+          } else if (item.type === 'ASSIGNMENT_MOVED') {
+            title = t(
+              'notifications.assignmentMovedShort',
+              'Назначение изменено',
+            );
+          } else if (item.type === 'ASSIGNMENT_CANCELLED') {
+            title = t(
+              'notifications.assignmentCancelledShort',
+              'Назначение отменено',
+            );
+          } else if (item.type === 'ASSIGNMENT_UPDATED') {
+            title = t(
+              'notifications.assignmentUpdatedShort',
+              'Назначение обновлено',
+            );
+          }
+          // Заложка под будущие уведомления по корректировкам графика
+          else if (item.type === 'SCHEDULE_CORRECTION_REQUESTED') {
+            title = t(
+              'notifications.scheduleCorrectionRequestedShort',
+              'Запрос на корректировку графика',
+            );
+          } else if (item.type === 'SCHEDULE_CORRECTION_APPROVED') {
+            title = t(
+              'notifications.scheduleCorrectionApprovedShort',
+              'Корректировка графика одобрена',
+            );
+          } else if (item.type === 'SCHEDULE_CORRECTION_REJECTED') {
+            title = t(
+              'notifications.scheduleCorrectionRejectedShort',
+              'Корректировка графика отклонена',
+            );
+          } else {
+            // Непонятный тип — просто текст по умолчанию
+            title = t('notifications.generic', 'Уведомление');
+          }
+
+          const whoAndWhere = [employeeName, workplaceLabel]
+            .filter(Boolean)
+            .join(' — ');
+
+          description = whoAndWhere || null;
 
           return (
-            <div key={item.id} className="py-2 border-b last:border-none">
-              <Typography.Text strong>{t(key, { workplace })}</Typography.Text>
+            <div
+              key={item.id}
+              className="py-2 border-b last:border-b-0"
+              style={{ fontSize: 13 }}
+            >
+              <Typography.Text strong>{title}</Typography.Text>
+              {description && (
+                <div>
+                  <Typography.Text>{description}</Typography.Text>
+                </div>
+              )}
               <div>
-                <Typography.Text type="secondary">{date}</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {createdAt}
+                </Typography.Text>
               </div>
             </div>
           );

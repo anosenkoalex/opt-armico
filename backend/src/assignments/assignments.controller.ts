@@ -27,6 +27,87 @@ import {
   ListAssignmentsDto,
   listAssignmentsSchema,
 } from './dto/list-assignments.dto.js';
+import { z } from 'zod';
+
+// DTO для массовых действий с корзиной
+const bulkTrashActionSchema = z.object({
+  ids: z.array(z.string().min(1, 'id обязателен')).nonempty('Нужно указать хотя бы одно id'),
+});
+
+type BulkTrashActionDto = z.infer<typeof bulkTrashActionSchema>;
+
+/**
+ * 🔧 DTO для запроса корректировки расписания по назначению
+ *
+ * Пользователь указывает:
+ * - дату (обязательна)
+ * - опционально время начала/конца внутри дня
+ * - опционально тип смены (DAY_OFF / OFFICE / REMOTE / DEFAULT)
+ * - комментарий – обязательно (что хочет поменять)
+ */
+const requestScheduleAdjustmentSchema = z.object({
+  date: z
+    .string()
+    .min(1, 'Дата обязательна')
+    // допускаем как полный ISO, так и просто YYYY-MM-DD
+    .refine(
+      (val) =>
+        !Number.isNaN(Date.parse(val)) ||
+        /^\d{4}-\d{2}-\d{2}$/.test(val),
+      'Некорректный формат даты',
+    ),
+  startsAt: z
+    .string()
+    .optional()
+    .refine(
+      (val) => !val || !Number.isNaN(Date.parse(val)),
+      'Некорректный формат времени начала',
+    ),
+  endsAt: z
+    .string()
+    .optional()
+    .refine(
+      (val) => !val || !Number.isNaN(Date.parse(val)),
+      'Некорректный формат времени окончания',
+    ),
+  kind: z
+    .enum(['DEFAULT', 'OFFICE', 'REMOTE', 'DAY_OFF'])
+    .optional(),
+  comment: z.string().min(1, 'Комментарий обязателен').max(2000),
+});
+
+export type RequestScheduleAdjustmentDto = z.infer<
+  typeof requestScheduleAdjustmentSchema
+>;
+
+/**
+ * 🔧 Фильтры для списка запросов корректировок (для менеджера/админа)
+ */
+const listScheduleAdjustmentsSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z
+    .enum(['PENDING', 'APPROVED', 'REJECTED'])
+    .optional(),
+  userId: z.string().optional(),
+  assignmentId: z.string().optional(),
+});
+
+export type ListScheduleAdjustmentsDto = z.infer<
+  typeof listScheduleAdjustmentsSchema
+>;
+
+/**
+ * 🔧 Решение по запросу корректировки (одобрить / отклонить)
+ * Пока только опциональный комментарий менеджера.
+ */
+const scheduleAdjustmentDecisionSchema = z.object({
+  managerComment: z.string().max(2000).optional(),
+});
+
+export type ScheduleAdjustmentDecisionDto = z.infer<
+  typeof scheduleAdjustmentDecisionSchema
+>;
 
 @Controller('assignments')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -55,7 +136,7 @@ export class AssignmentsController {
   }
 
   /**
-   * Список назначений в корзине (isDeleted = true)
+   * Список назначений в корзине (deletedAt != null)
    */
   @Get('trash')
   @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
@@ -111,5 +192,119 @@ export class AssignmentsController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   complete(@Param('id') id: string) {
     return this.assignmentsService.complete(id);
+  }
+
+  /**
+   * 📥 Экспорт выбранных назначений из корзины
+   * Возвращает данные в виде массива, фронт сам делает XLS/CSV/таблицу.
+   */
+  @Post('trash/export')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  exportFromTrash(
+    @Body(new ZodValidationPipe(bulkTrashActionSchema))
+    payload: BulkTrashActionDto,
+  ) {
+    return this.assignmentsService.exportFromTrash(payload.ids);
+  }
+
+  /**
+   * 🗑 Окончательное удаление выбранных назначений из корзины
+   */
+  @Post('trash/delete')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  bulkDeleteFromTrash(
+    @Body(new ZodValidationPipe(bulkTrashActionSchema))
+    payload: BulkTrashActionDto,
+  ) {
+    return this.assignmentsService.bulkDeleteFromTrash(payload.ids);
+  }
+
+  /**
+   * 📥 + 🗑 Экспорт + удаление (скачать и удалить)
+   */
+  @Post('trash/export-and-delete')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  exportAndDeleteFromTrash(
+    @Body(new ZodValidationPipe(bulkTrashActionSchema))
+    payload: BulkTrashActionDto,
+  ) {
+    return this.assignmentsService.exportAndDeleteFromTrash(payload.ids);
+  }
+
+  // ================================================================
+  //        🔔 БЛОК ЗАПРОСОВ НА КОРРЕКТИРОВКУ РАСПИСАНИЯ
+  // ================================================================
+
+  /**
+   * 📝 Пользователь запрашивает корректировку по конкретному назначению.
+   *
+   * POST /assignments/:id/adjustments
+   *
+   * Роли: обычный пользователь + менеджер/админ (на всякий случай)
+   */
+  @Post(':id/adjustments')
+  @Roles(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  requestScheduleAdjustment(
+    @Param('id') assignmentId: string,
+    @Body(new ZodValidationPipe(requestScheduleAdjustmentSchema))
+    payload: RequestScheduleAdjustmentDto,
+  ) {
+    return this.assignmentsService.requestScheduleAdjustment(
+      assignmentId,
+      payload,
+    );
+  }
+
+  /**
+   * 📋 Список всех запросов корректировок (для менеджера/админа),
+   * с фильтрами по статусу / сотруднику / назначению.
+   *
+   * GET /assignments/adjustments
+   */
+  @Get('adjustments')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  listScheduleAdjustments(
+    @Query(new ZodValidationPipe(listScheduleAdjustmentsSchema))
+    query: ListScheduleAdjustmentsDto,
+  ) {
+    return this.assignmentsService.listScheduleAdjustments(query);
+  }
+
+  /**
+   * ✅ Одобрить запрос корректировки
+   *
+   * POST /assignments/adjustments/:adjustmentId/approve
+   */
+  @Post('adjustments/:adjustmentId/approve')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  approveScheduleAdjustment(
+    @Param('adjustmentId') adjustmentId: string,
+    @Body(new ZodValidationPipe(scheduleAdjustmentDecisionSchema))
+    payload: ScheduleAdjustmentDecisionDto,
+  ) {
+    return this.assignmentsService.decideScheduleAdjustment(
+      adjustmentId,
+      'APPROVED',
+      payload,
+    );
+  }
+
+  /**
+   * ❌ Отклонить запрос корректировки
+   *
+   * POST /assignments/adjustments/:adjustmentId/reject
+   */
+  @Post('adjustments/:adjustmentId/reject')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  rejectScheduleAdjustment(
+    @Param('adjustmentId') adjustmentId: string,
+    @Body(new ZodValidationPipe(scheduleAdjustmentDecisionSchema))
+    payload: ScheduleAdjustmentDecisionDto,
+  ) {
+    return this.assignmentsService.decideScheduleAdjustment(
+      adjustmentId,
+      'REJECTED',
+      payload,
+    );
   }
 }

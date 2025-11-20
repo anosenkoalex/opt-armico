@@ -46,6 +46,13 @@ enum ShiftKind {
   DAY_OFF   // выходной / day off
 }
 
+// 🔥 НОВЫЙ enum для статуса запроса корректировки расписания
+enum AdjustmentStatus {
+  PENDING   // ожидает решения
+  APPROVED  // одобрен
+  REJECTED  // отклонён
+}
+
 model Org {
   id          String        @id @default(cuid())
   name        String
@@ -59,24 +66,27 @@ model Org {
 }
 
 model User {
-  id            String         @id @default(cuid())
+  id            String                 @id @default(cuid())
   orgId         String?
-  org           Org?           @relation(fields: [orgId], references: [id])
-  email         String         @unique
+  org           Org?                   @relation(fields: [orgId], references: [id])
+  email         String                 @unique
   password      String
   fullName      String?
   position      String?
-  role          UserRole       @default(USER)
+  role          UserRole               @default(USER)
 
-  isSystemUser  Boolean        @default(false)
+  isSystemUser  Boolean                @default(false)
   phone         String?
 
   assignments   Assignment[]
   notifications Notification[]
   slots         Slot[]
   constraints   Constraint[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  // 🔥 запросы корректировок расписания от этого пользователя
+  scheduleAdjustments AssignmentAdjustment[]
+
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
 }
 
 model Workplace {
@@ -154,6 +164,8 @@ model Assignment {
   deletedAt   DateTime?
 
   shifts      AssignmentShift[]
+  // 🔥 запросы корректировок, связанные с этим назначением
+  adjustments AssignmentAdjustment[]
 }
 
 model AssignmentShift {
@@ -169,7 +181,7 @@ model AssignmentShift {
   endsAt       DateTime
 
   /// 🔥 Тип смены (офис, удалёнка, day off и т.д.)
-  kind         ShiftKind  @default(DEFAULT)
+  kind         ShiftKind   @default(DEFAULT)
 
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -195,4 +207,38 @@ model SmsSettings {
   enabled   Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// 🔥 НОВАЯ таблица запросов на корректировку расписания
+model AssignmentAdjustment {
+  id           String            @id @default(cuid())
+
+  assignmentId String
+  assignment   Assignment        @relation(fields: [assignmentId], references: [id])
+
+  userId       String
+  user         User              @relation(fields: [userId], references: [id])
+
+  /// День, к которому относится корректировка
+  date         DateTime
+
+  /// Если надо скорректировать конкретные часы — можно заполнить
+  startsAt     DateTime?
+  endsAt       DateTime?
+
+  /// Какую смену хочет по сути пользователь (чаще всего DAY_OFF)
+  kind         ShiftKind        @default(DAY_OFF)
+
+  /// Комментарий сотрудника (почему просит корректировку)
+  comment          String
+  /// Комментарий менеджера при одобрении / отказе
+  managerComment   String?
+
+  status       AdjustmentStatus  @default(PENDING)
+
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([assignmentId])
+  @@index([userId, date])
 }

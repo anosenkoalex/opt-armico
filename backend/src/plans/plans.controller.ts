@@ -25,7 +25,8 @@ import { UpdateSlotDto, updateSlotSchema } from './dto/update-slot.dto.js';
 
 @Controller('plans')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.SUPER_ADMIN)
+// 🔓 Даем доступ и SUPER_ADMIN, и MANAGER
+@Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
 export class PlansController {
   constructor(private readonly plansService: PlansService) {}
 

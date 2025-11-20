@@ -180,7 +180,9 @@ export class PlansService {
       throw new BadRequestException('Dates are outside of plan range');
     }
 
-    const org = await this.prisma.org.findUnique({ where: { id: payload.orgId } });
+    const org = await this.prisma.org.findUnique({
+      where: { id: payload.orgId },
+    });
 
     if (!org) {
       throw new NotFoundException('Organisation not found');
@@ -190,7 +192,10 @@ export class PlansService {
       where: {
         planId,
         OR: [
-          { dateStart: { lte: payload.dateEnd }, dateEnd: { gte: payload.dateStart } },
+          {
+            dateStart: { lte: payload.dateEnd },
+            dateEnd: { gte: payload.dateStart },
+          },
           { dateStart: { gte: payload.dateStart, lte: payload.dateEnd } },
         ],
       },
@@ -251,7 +256,9 @@ export class PlansService {
       }
 
       const relevant = constraints.filter(
-        (item) => item.userId === userId || (!item.userId && (!item.orgId || item.orgId === payload.orgId)),
+        (item) =>
+          item.userId === userId ||
+          (!item.userId && (!item.orgId || item.orgId === payload.orgId)),
       );
 
       for (const constraint of relevant) {
@@ -266,7 +273,9 @@ export class PlansService {
             typeof value === 'object' &&
             value !== null &&
             Array.isArray((value as Record<string, unknown>).orgIds) &&
-            ((value as Record<string, unknown>).orgIds as unknown[]).includes(payload.orgId)
+            ((value as Record<string, unknown>).orgIds as unknown[]).includes(
+              payload.orgId,
+            )
           ) {
             return false;
           }
@@ -303,7 +312,10 @@ export class PlansService {
               return (
                 slot.userId === userId &&
                 this.getIsoWeekKey(slot.dateStart) === weekNumber &&
-                !(slot.dateEnd < payload.dateStart || slot.dateStart > payload.dateEnd)
+                !(
+                  slot.dateEnd < payload.dateStart ||
+                  slot.dateStart > payload.dateEnd
+                )
               );
             }).length;
 
@@ -350,7 +362,9 @@ export class PlansService {
     }
 
     if (planned.length < payload.teamSize) {
-      throw new BadRequestException('Not enough available employees for auto assignment');
+      throw new BadRequestException(
+        'Not enough available employees for auto assignment',
+      );
     }
 
     const created = await this.createSlots(planId, planned, plan);
@@ -397,8 +411,16 @@ export class PlansService {
     }
 
     const updates = slots.map((slot) => {
-      if (slot.locked && (payload.newDateStart || payload.newDateEnd || payload.newOrgId || payload.newUserId)) {
-        throw new ForbiddenException(`Slot ${slot.id} is locked and cannot be moved`);
+      if (
+        slot.locked &&
+        (payload.newDateStart ||
+          payload.newDateEnd ||
+          payload.newOrgId ||
+          payload.newUserId)
+      ) {
+        throw new ForbiddenException(
+          `Slot ${slot.id} is locked and cannot be moved`,
+        );
       }
 
       const nextDateStart = payload.newDateStart ?? slot.dateStart;
@@ -436,7 +458,9 @@ export class PlansService {
     const plan = await this.ensurePlan(planId);
     this.assertPlanMutable(plan);
 
-    const slot = await this.prisma.slot.findFirst({ where: { id: slotId, planId } });
+    const slot = await this.prisma.slot.findFirst({
+      where: { id: slotId, planId },
+    });
 
     if (!slot) {
       throw new NotFoundException('Slot not found');
@@ -474,10 +498,14 @@ export class PlansService {
       },
     });
 
-    await this.notifyUsers([updated.userId], NotificationType.ASSIGNMENT_UPDATED, {
-      planId,
-      slotId,
-    });
+    await this.notifyUsers(
+      [updated.userId],
+      NotificationType.ASSIGNMENT_UPDATED,
+      {
+        planId,
+        slotId,
+      },
+    );
 
     return updated;
   }
@@ -486,7 +514,9 @@ export class PlansService {
     const plan = await this.ensurePlan(planId);
     this.assertPlanMutable(plan);
 
-    const slot = await this.prisma.slot.findFirst({ where: { id: slotId, planId } });
+    const slot = await this.prisma.slot.findFirst({
+      where: { id: slotId, planId },
+    });
 
     if (!slot) {
       throw new NotFoundException('Slot not found');
@@ -521,6 +551,10 @@ export class PlansService {
         status: { not: PlanStatus.ARCHIVED },
       },
     };
+
+    // ⚠️ query.status сейчас фронт шлёт как "ACTIVE" (AssignmentStatus),
+    // поэтому здесь специально не фильтруем по slot.status,
+    // чтобы ничего не отвалилось.
 
     if (query.mode === 'byUsers') {
       const [users, total] = await this.prisma.$transaction([
@@ -637,7 +671,9 @@ export class PlansService {
   }
 
   async confirmSlotForUser(userId: string, slotId: string) {
-    const slot = await this.prisma.slot.findFirst({ where: { id: slotId, userId } });
+    const slot = await this.prisma.slot.findFirst({
+      where: { id: slotId, userId },
+    });
 
     if (!slot) {
       throw new NotFoundException('Slot not found');
@@ -661,6 +697,13 @@ export class PlansService {
     return updated;
   }
 
+  /**
+   * Запрос на корректировку слота (day off / смена времени и т.п.).
+   * Логика:
+   *  - слоту добавляем строку в note с комментарием
+   *  - статус слота переводим в REPLACED (типа "есть запрос на изменение")
+   *  - шлём уведомление всем SUPER_ADMIN + MANAGER
+   */
   async requestSwap(userId: string, slotId: string, payload: RequestSwapDto) {
     const slot = await this.prisma.slot.findFirst({
       where: { id: slotId, userId },
@@ -674,7 +717,15 @@ export class PlansService {
       throw new NotFoundException('Slot not found');
     }
 
-    const noteLine = `[swap] ${new Date().toISOString()} ${payload.comment}`;
+    if (slot.status === SlotStatus.CANCELLED) {
+      throw new BadRequestException(
+        'Cancelled slot cannot be adjusted or swapped',
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const noteLine = `[adjustment] ${nowIso} ${payload.comment}`;
+
     const updated = await this.prisma.slot.update({
       where: { id: slotId },
       data: {
@@ -683,20 +734,23 @@ export class PlansService {
       },
     });
 
-    const admins = await this.prisma.user.findMany({
+    const adminsAndManagers = await this.prisma.user.findMany({
       where: {
-        role: UserRole.SUPER_ADMIN,
+        role: { in: [UserRole.SUPER_ADMIN, UserRole.MANAGER] },
       },
       select: { id: true },
     });
 
     await this.notifyUsers(
-      admins.map((admin) => admin.id),
+      adminsAndManagers.map((u) => u.id),
       NotificationType.ASSIGNMENT_UPDATED,
       {
+        kind: 'SLOT_ADJUSTMENT_REQUEST',
         planId: slot.planId,
         slotId,
         orgId: slot.orgId,
+        orgName: slot.org?.name ?? null,
+        planName: slot.plan?.name ?? null,
         comment: payload.comment,
         requestedBy: userId,
       },
@@ -721,7 +775,11 @@ export class PlansService {
     }
   }
 
-  private async createSlots(planId: string, slots: BulkAssignSlotDto[], plan?: Plan) {
+  private async createSlots(
+    planId: string,
+    slots: BulkAssignSlotDto[],
+    plan?: Plan,
+  ) {
     const resolvedPlan = plan ?? (await this.ensurePlan(planId));
 
     const uniqueOrgIds = [...new Set(slots.map((slot) => slot.orgId))];
@@ -771,11 +829,14 @@ export class PlansService {
   }
 
   private getIsoWeekKey(date: Date) {
-    const utcDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    const utcDate = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    );
     const day = utcDate.getUTCDay() || 7;
     utcDate.setUTCDate(utcDate.getUTCDate() + 4 - day);
     const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
-    const diffDays = Math.floor((utcDate.getTime() - yearStart.getTime()) / 86_400_000) + 1;
+    const diffDays =
+      Math.floor((utcDate.getTime() - yearStart.getTime()) / 86_400_000) + 1;
     const weekNo = Math.ceil(diffDays / 7);
     return `${utcDate.getUTCFullYear()}-${weekNo}`;
   }

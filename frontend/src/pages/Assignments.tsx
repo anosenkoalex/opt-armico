@@ -20,6 +20,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { Dayjs } from 'dayjs';
 import { useMemo, useState, useCallback } from 'react';
+import type { Key } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AxiosError } from 'axios';
 import {
@@ -38,6 +39,7 @@ import {
   completeAssignment,
   deleteAssignment,
   restoreAssignment,
+  hardDeleteTrashAssignments,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
@@ -82,6 +84,160 @@ const sortShiftRows = (rows: ShiftRow[]): ShiftRow[] => {
   });
 };
 
+// 🔧 helper: короткие русские месяцы
+const RU_MONTHS_SHORT = [
+  'янв',
+  'фев',
+  'мар',
+  'апр',
+  'май',
+  'июн',
+  'июл',
+  'авг',
+  'сен',
+  'окт',
+  'ноя',
+  'дек',
+];
+
+// 🔧 helper: сформировать CSV по сменам: даты — в заголовках
+const buildAssignmentsCsv = (rows: Assignment[]): string => {
+  // соберём все уникальные даты по всем выбранным назначениям
+  const dateSet = new Set<string>();
+
+  rows.forEach((item) => {
+    const anyItem: any = item as any;
+    const shifts = Array.isArray(anyItem.shifts) ? anyItem.shifts : [];
+
+    if (shifts.length > 0) {
+      shifts.forEach((s: any) => {
+        const dSrc = s.date ?? s.startsAt ?? s.endsAt;
+        if (!dSrc) return;
+        const dKey = dayjs(dSrc).format('YYYY-MM-DD');
+        dateSet.add(dKey);
+      });
+    } else if (item.startsAt) {
+      // fallback для старых назначений без shifts: только один день, день начала
+      const dKey = dayjs(item.startsAt).format('YYYY-MM-DD');
+      dateSet.add(dKey);
+    }
+  });
+
+  const dateKeysSorted = Array.from(dateSet).sort(); // YYYY-MM-DD
+
+  // заголовки для дат вида "17.ноя"
+  const dateHeaders = dateKeysSorted.map((dKey) => {
+    const [, monthStr, dayStr] = dKey.split('-');
+    const monthIndex = Math.max(0, Math.min(11, Number(monthStr) - 1));
+    const monthLabel = RU_MONTHS_SHORT[monthIndex] ?? monthStr;
+    // удаляем ведущий ноль у дня
+    const dayNum = String(Number(dayStr));
+    return `${dayNum}.${monthLabel}`;
+  });
+
+  const header = [
+    'ID',
+    'Сотрудник',
+    'Email',
+    'Рабочее место',
+    'Код рабочего места',
+    'Статус',
+    ...dateHeaders,
+  ];
+
+  const lines = rows.map((item) => {
+    const anyItem: any = item as any;
+    const shifts = Array.isArray(anyItem.shifts) ? anyItem.shifts : [];
+
+    // карта: дата (YYYY-MM-DD) -> массив интервалов "HH:mm:ss-HH:mm:ss"
+    const dateToIntervals: Record<string, string[]> = {};
+
+    if (shifts.length > 0) {
+      shifts.forEach((s: any) => {
+        const dSrc = s.date ?? s.startsAt ?? s.endsAt;
+        if (!dSrc) return;
+        const dKey = dayjs(dSrc).format('YYYY-MM-DD');
+
+        const start = s.startsAt ? dayjs(s.startsAt) : null;
+        const end = s.endsAt ? dayjs(s.endsAt) : null;
+        if (!start || !end) return;
+
+        const interval = `${start.format('HH:mm:ss')}-${end.format(
+          'HH:mm:ss',
+        )}`;
+
+        if (!dateToIntervals[dKey]) dateToIntervals[dKey] = [];
+        dateToIntervals[dKey].push(interval);
+      });
+    } else if (item.startsAt) {
+      // fallback: только глобальный интервал в день начала
+      const start = dayjs(item.startsAt);
+      const end = item.endsAt ? dayjs(item.endsAt) : start;
+      const dKey = start.format('YYYY-MM-DD');
+      dateToIntervals[dKey] = [
+        `${start.format('HH:mm:ss')}-${end.format('HH:mm:ss')}`,
+      ];
+    }
+
+    const dateCols = dateKeysSorted.map((dKey) => {
+      const list = dateToIntervals[dKey];
+      return list && list.length ? list.join(', ') : '';
+    });
+
+    const employeeName = item.user?.fullName ?? '';
+    const employeeEmail = item.user?.email ?? '';
+    const workplaceName = item.workplace?.name ?? '';
+    const workplaceCode = item.workplace?.code ?? '';
+    const status = item.status;
+
+    const cols = [
+      item.id,
+      employeeName,
+      employeeEmail,
+      workplaceName,
+      workplaceCode,
+      status,
+      ...dateCols,
+    ];
+
+    // экранируем ; и " для CSV (разделитель — ;)
+    return cols
+      .map((value) => {
+        const v = value ?? '';
+        const str = String(v);
+        if (str.includes(';') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      })
+      .join(';');
+  });
+
+  return [header.join(';'), ...lines].join('\r\n');
+};
+
+// 🔧 helper: скачать CSV как файл (с UTF-8 BOM для Excel)
+const downloadCsv = (rows: Assignment[], prefix: string) => {
+  if (!rows.length) {
+    throw new Error('NO_ROWS');
+  }
+
+  const csv = buildAssignmentsCsv(rows);
+  const csvWithBom = '\uFEFF' + csv;
+
+  const blob = new Blob([csvWithBom], {
+    type: 'text/csv;charset=utf-8;',
+  });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${prefix}-${dayjs().format('YYYY-MM-DD_HH-mm-ss')}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+};
+
 const AssignmentsPage = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -109,6 +265,14 @@ const AssignmentsPage = () => {
 
   // режим: обычные назначения / корзина
   const [showTrash, setShowTrash] = useState(false);
+
+  // выбранные строки (для массовых операций в корзине)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
+
+  // 🟠 временная подсветка сотрудника, у которого ошибка по лимиту назначений
+  const [highlightedUserId, setHighlightedUserId] = useState<string | null>(
+    null,
+  );
 
   const isAdmin = user?.role === 'SUPER_ADMIN';
   const isManager = user?.role === 'MANAGER';
@@ -167,16 +331,30 @@ const AssignmentsPage = () => {
     enabled: canManageAssignments,
   });
 
-  const handleAssignmentError = (error: unknown) => {
+  const handleAssignmentError = (
+    error: unknown,
+    userIdForHighlight?: string,
+  ) => {
     const axiosError = error as AxiosError<{ message?: string | string[] }>;
     const msg = axiosError?.response?.data?.message;
 
     if (typeof msg === 'string') {
       const normalized = msg.toLowerCase();
 
+      // пересечения по времени — здесь подсветка не нужна
       if (normalized.includes('overlap') || normalized.includes('пересек')) {
         message.error(t('assignments.overlapError'));
         return;
+      }
+
+      // 🟠 если знаем userId — всегда подсвечиваем его строки, независимо от текста
+      if (userIdForHighlight) {
+        setHighlightedUserId(userIdForHighlight);
+        setTimeout(() => {
+          setHighlightedUserId((current) =>
+            current === userIdForHighlight ? null : current,
+          );
+        }, 5000);
       }
 
       message.error(msg);
@@ -192,7 +370,7 @@ const AssignmentsPage = () => {
   };
 
   const createMutation = useMutation({
-    mutationFn: createAssignment,
+    mutationFn: (payload: any) => createAssignment(payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['assignments'] });
       void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
@@ -205,8 +383,8 @@ const AssignmentsPage = () => {
       setTimeRangeForAll(null);
       setApplyTimeToAll(true);
     },
-    onError: (error: unknown) => {
-      handleAssignmentError(error);
+    onError: (error, variables: any) => {
+      handleAssignmentError(error, variables?.userId);
     },
   });
 
@@ -230,8 +408,8 @@ const AssignmentsPage = () => {
       setTimeRangeForAll(null);
       setApplyTimeToAll(true);
     },
-    onError: (error: unknown) => {
-      handleAssignmentError(error);
+    onError: (error, variables: any) => {
+      handleAssignmentError(error, variables?.values?.userId);
     },
   });
 
@@ -301,6 +479,27 @@ const AssignmentsPage = () => {
       message.success(
         t('assignments.restoredFromTrash', 'Назначение восстановлено'),
       );
+      setSelectedRowKeys([]);
+    },
+    onError: (error: unknown) => {
+      handleAssignmentError(error);
+    },
+  });
+
+  // 🗑 окончательное удаление выбранных из корзины
+  const hardDeleteTrashMutation = useMutation({
+    mutationFn: (ids: string[]) => hardDeleteTrashAssignments(ids),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
+      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      setSelectedRowKeys([]);
+      message.success(
+        t(
+          'assignments.trash.hardDeleteSuccess',
+          'Выбранные назначения удалены навсегда',
+        ) + (result?.deletedCount ? ` (${result.deletedCount})` : ''),
+      );
     },
     onError: (error: unknown) => {
       handleAssignmentError(error);
@@ -331,27 +530,6 @@ const AssignmentsPage = () => {
       pageSize: raw.pageSize ?? pageSize,
     };
   }, [assignmentsQuery.data, page, pageSize]);
-
-  // Считаем, у скольких сотрудников сейчас 2 активных назначения (по текущему списку)
-  const activeAssignmentsPerUser = useMemo(() => {
-    const map: Record<string, number> = {};
-    const now = dayjs();
-
-    for (const item of assignments) {
-      if (item.status !== 'ACTIVE') continue;
-
-      const start = dayjs(item.startsAt);
-      const end = item.endsAt ? dayjs(item.endsAt) : null;
-
-      // активное "сейчас": start <= now <= end (или без конца)
-      if (start.isAfter(now)) continue;
-      if (end && end.isBefore(now)) continue;
-
-      map[item.userId] = (map[item.userId] ?? 0) + 1;
-    }
-
-    return map;
-  }, [assignments]);
 
   // единая функция открытия модалки редактирования (и для кнопки, и для клика по датам)
   const handleOpenEdit = useCallback(
@@ -470,13 +648,22 @@ const AssignmentsPage = () => {
         render: (_value: unknown, record: Assignment) => {
           const label =
             record.user?.fullName ?? record.user?.email ?? t('assignments.user');
-          const count = activeAssignmentsPerUser[record.userId] ?? 0;
+
+          const isHighlighted =
+            !showTrash &&
+            record.status === 'ACTIVE' &&
+            highlightedUserId === record.userId;
 
           return (
             <Space size="small">
               <span>{label}</span>
-              {count >= 2 && !showTrash && (
-                <Tag color="orange">{t('assignments.twoActiveTag')}</Tag>
+              {isHighlighted && (
+                <Tag color="orange">
+                  {t(
+                    'assignments.twoActiveTag',
+                    'У сотрудника уже 2 активных назначения',
+                  )}
+                </Tag>
               )}
             </Space>
           );
@@ -497,7 +684,7 @@ const AssignmentsPage = () => {
         title: t('assignments.timeframe'),
         dataIndex: 'startsAt',
         key: 'timeframe',
-        // в списке показываем только ДАТЫ (как ты просил),
+        // в списке показываем только ДАТЫ,
         // по клику — попап с графиком (кроме корзины)
         render: (_value: unknown, record: Assignment) => (
           <Button
@@ -673,7 +860,6 @@ const AssignmentsPage = () => {
     ],
     [
       t,
-      activeAssignmentsPerUser,
       handleOpenEdit,
       notifyMutation,
       notifyingId,
@@ -681,6 +867,7 @@ const AssignmentsPage = () => {
       deleteMutation.isPending,
       restoreMutation.isPending,
       showTrash,
+      highlightedUserId,
     ],
   );
 
@@ -886,6 +1073,145 @@ const AssignmentsPage = () => {
     return map;
   }, [shiftRows]);
 
+  // rowSelection только в режиме корзины
+  const rowSelection = showTrash
+    ? {
+        selectedRowKeys,
+        onChange: (keys: Key[]) => setSelectedRowKeys(keys),
+      }
+    : undefined;
+
+  // хэндлеры массовых действий
+  const getSelectedIds = () => selectedRowKeys.map(String);
+
+  const handleExportSelected = () => {
+    const ids = getSelectedIds();
+    if (!ids.length) {
+      message.warning(
+        t(
+          'assignments.trash.noSelection',
+          'Сначала выберите хотя бы одно назначение в корзине',
+        ),
+      );
+      return;
+    }
+
+    const rows = assignments.filter((a) => ids.includes(a.id));
+
+    try {
+      downloadCsv(rows, 'assignments-trash');
+      message.success(
+        t(
+          'assignments.trash.exportSuccess',
+          'Выбранные назначения выгружены в Excel-таблицу',
+        ),
+      );
+    } catch (e: any) {
+      if (e?.message === 'NO_ROWS') {
+        message.warning(
+          t(
+            'assignments.trash.emptyExport',
+            'Нет данных для экспорта по выбранным назначениям',
+          ),
+        );
+      } else {
+        console.error(e);
+        message.error(
+          t(
+            'assignments.trash.exportError',
+            'Не удалось сформировать файл экспорта',
+          ),
+        );
+      }
+    }
+  };
+
+  const handleHardDeleteSelected = () => {
+    const ids = getSelectedIds();
+    if (!ids.length) {
+      message.warning(
+        t(
+          'assignments.trash.noSelection',
+          'Сначала выберите хотя бы одно назначение в корзине',
+        ),
+      );
+      return;
+    }
+
+    Modal.confirm({
+      title: t(
+        'assignments.trash.hardDeleteConfirmTitle',
+        'Удалить выбранные назначения навсегда?',
+      ),
+      content: t(
+        'assignments.trash.hardDeleteConfirmDescription',
+        'Они будут удалены без возможности восстановления.',
+      ),
+      okText: t('common.delete') ?? 'Удалить',
+      cancelText: t('common.cancel'),
+      centered: true,
+      okButtonProps: { danger: true },
+      onOk: () => hardDeleteTrashMutation.mutate(ids),
+    });
+  };
+
+  const handleExportAndDeleteSelected = () => {
+    const ids = getSelectedIds();
+    if (!ids.length) {
+      message.warning(
+        t(
+          'assignments.trash.noSelection',
+          'Сначала выберите хотя бы одно назначение в корзине',
+        ),
+      );
+      return;
+    }
+
+    const rows = assignments.filter((a) => ids.includes(a.id));
+
+    Modal.confirm({
+      title: t(
+        'assignments.trash.exportAndDeleteConfirmTitle',
+        'Выгрузить и удалить выбранные назначения?',
+      ),
+      content: t(
+        'assignments.trash.exportAndDeleteConfirmDescription',
+        'Сначала будет сформирован файл с выбранными назначениями, затем они будут удалены из корзины.',
+      ),
+      okText: t('assignments.trash.exportAndDelete', 'Скачать и удалить'),
+      cancelText: t('common.cancel'),
+      centered: true,
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          downloadCsv(rows, 'assignments-trash-export-and-delete');
+        } catch (e: any) {
+          if (e?.message === 'NO_ROWS') {
+            message.warning(
+              t(
+                'assignments.trash.emptyExport',
+                'Нет данных для экспорта по выбранным назначениям',
+              ),
+            );
+            return;
+          } else {
+            console.error(e);
+            message.error(
+              t(
+                'assignments.trash.exportAndDeleteError',
+                'Не удалось выгрузить и удалить назначения',
+              ),
+            );
+            return;
+          }
+        }
+
+        // если экспорт ок — жёсткое удаление
+        hardDeleteTrashMutation.mutate(ids);
+      },
+    });
+  };
+
   return (
     <Card
       title={t('assignments.manageTitle')}
@@ -893,16 +1219,25 @@ const AssignmentsPage = () => {
         <Space>
           <Button
             type={showTrash ? 'default' : 'primary'}
-            onClick={() => setShowTrash(false)}
+            onClick={() => {
+              setShowTrash(false);
+              setSelectedRowKeys([]);
+              setPage(1);
+            }}
           >
             {t('assignments.viewActive', 'Назначения')}
           </Button>
           <Button
             type={showTrash ? 'primary' : 'default'}
-            onClick={() => setShowTrash(true)}
+            onClick={() => {
+              setShowTrash(true);
+              setSelectedRowKeys([]);
+              setPage(1);
+            }}
           >
             {t('assignments.viewTrash', 'Корзина')}
           </Button>
+
           {!showTrash && (
             <Button
               type="primary"
@@ -919,6 +1254,46 @@ const AssignmentsPage = () => {
             >
               {t('assignments.add')}
             </Button>
+          )}
+
+          {showTrash && (
+            <>
+              <Button
+                onClick={handleExportSelected}
+                disabled={!selectedRowKeys.length}
+              >
+                {t(
+                  'assignments.trash.exportSelected',
+                  'Скачать выбранные',
+                )}
+              </Button>
+              <Button
+                danger
+                onClick={handleHardDeleteSelected}
+                disabled={
+                  !selectedRowKeys.length || hardDeleteTrashMutation.isPending
+                }
+                loading={hardDeleteTrashMutation.isPending}
+              >
+                {t(
+                  'assignments.trash.hardDeleteSelected',
+                  'Удалить выбранные',
+                )}
+              </Button>
+              <Button
+                danger
+                onClick={handleExportAndDeleteSelected}
+                disabled={
+                  !selectedRowKeys.length || hardDeleteTrashMutation.isPending
+                }
+                loading={hardDeleteTrashMutation.isPending}
+              >
+                {t(
+                  'assignments.trash.exportAndDeleteSelected',
+                  'Скачать и удалить',
+                )}
+              </Button>
+            </>
           )}
         </Space>
       }
@@ -981,6 +1356,7 @@ const AssignmentsPage = () => {
         dataSource={assignments}
         columns={columns}
         loading={assignmentsQuery.isLoading}
+        rowSelection={rowSelection}
         pagination={{
           current: page,
           pageSize,

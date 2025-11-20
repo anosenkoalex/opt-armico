@@ -56,7 +56,7 @@ export class PlannerController {
   constructor(private readonly plannerService: PlannerService) {}
 
   @Get('matrix')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.USER)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   getMatrix(
     @CurrentUser() user: JwtPayload,
     @Query(new ZodValidationPipe(plannerMatrixSchema)) query: PlannerMatrixDto,
@@ -65,7 +65,7 @@ export class PlannerController {
   }
 
   @Get('export')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.USER)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
   async export(
     @CurrentUser() user: JwtPayload,
     @Query(new ZodValidationPipe(plannerExportSchema)) query: PlannerExportDto,
