@@ -121,10 +121,14 @@ export class UsersService implements OnModuleInit {
       ? (await this.ensureOrg(orgId))?.id ?? null
       : (await this.getDefaultOrg()).id;
 
-    const rawPassword = data.password || this.generatePassword();
-    const passwordHash = await bcrypt.hash(rawPassword, 10);
+    const sendPassword = data.sendPassword === true;
 
-    const sendPassword = Boolean(data.sendPassword);
+    const rawPassword =
+      data.password && data.password.length > 0
+        ? data.password
+        : this.generatePassword();
+
+    const passwordHash = await bcrypt.hash(rawPassword, 10);
 
     const created = await this.prisma.user.create({
       data: {
@@ -136,8 +140,7 @@ export class UsersService implements OnModuleInit {
         position: data.position?.trim() || null,
         phone: data.phone?.trim() || null,
         isSystemUser: false,
-        passwordSentAt: new Date(),
-        passwordUpdatedAt: new Date(),
+        ...(sendPassword ? { passwordSentAt: new Date() } : {}),
       },
       include: {
         org: {
