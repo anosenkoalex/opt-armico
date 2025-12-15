@@ -131,12 +131,18 @@ export class UsersService implements OnModuleInit {
         position: data.position?.trim() || null,
         phone: data.phone?.trim() || null,
         isSystemUser: false,
-
-        createdWithAutoSend: sendPassword,
         passwordSentAt: sendPassword ? new Date() : null,
         passwordUpdatedAt: null,
       },
-      select: this.baseSelect(),
+      include: {
+        org: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
     });
 
     if (sendPassword) {
