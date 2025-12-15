@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
@@ -37,6 +38,8 @@ const DEFAULT_ORG_SLUG = 'armico';
 
 @Injectable()
 export class UsersService implements OnModuleInit {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
@@ -70,6 +73,8 @@ export class UsersService implements OnModuleInit {
           position: null,
           phone: null,
           isSystemUser: true,
+          passwordSentAt: new Date(),
+          passwordUpdatedAt: null,
         },
       });
     }
@@ -131,7 +136,7 @@ export class UsersService implements OnModuleInit {
         position: data.position?.trim() || null,
         phone: data.phone?.trim() || null,
         isSystemUser: false,
-        passwordSentAt: sendPassword ? new Date() : null,
+        passwordSentAt: new Date(),
         passwordUpdatedAt: null,
       },
       include: {
@@ -161,7 +166,7 @@ export class UsersService implements OnModuleInit {
           <a href="${appUrl.replace(/\/$/, '')}/login">Войти</a>
         </div>
         `,
-      );
+      ).catch((e) => this.logger.error(e));
     }
 
     return { ...this.presentUser(created), rawPassword };

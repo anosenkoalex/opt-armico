@@ -90,6 +90,7 @@ export class AuthService {
         fullName: fullName ?? null,
         position: position ?? null,
         role: role ?? UserRole.USER,
+        passwordSentAt: new Date(),
       },
     });
 
