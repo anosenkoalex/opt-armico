@@ -456,6 +456,17 @@ const MyPlace = () => {
   const hasCorrectionIntervals =
     Object.keys(correctionIntervals).length > 0;
 
+  const hasInvalidCorrectionIntervals = useMemo(() => {
+    return Object.keys(correctionIntervals).some((dateKey) => {
+      const intervals = correctionIntervals[dateKey];
+      return intervals.some((interval) => {
+        const start = dayjs(`${dateKey} ${interval.start}`, 'DD.MM.YYYY HH:mm');
+        const end = dayjs(`${dateKey} ${interval.end}`, 'DD.MM.YYYY HH:mm');
+        return !end.isAfter(start);
+      });
+    });
+  }, [correctionIntervals]);
+
   const getShiftKindLabel = (kind?: ShiftKindType) => {
     if (!kind || kind === 'DEFAULT') return '';
     if (kind === 'OFFICE')
@@ -469,6 +480,7 @@ const MyPlace = () => {
 
   const handleSendCorrection = async () => {
     if (!correctionAssignment) return;
+    if (hasInvalidCorrectionIntervals) return;
 
     const text = correctionComment.trim();
 
@@ -1237,6 +1249,7 @@ const MyPlace = () => {
         okText={t('myPlace.sendSwapRequest', 'Отправить запрос')}
         cancelText={t('common.cancel', 'Отмена')}
         confirmLoading={isSendingCorrection}
+        okButtonProps={{ disabled: hasInvalidCorrectionIntervals }}
         onCancel={() => {
           setCorrectionAssignment(null);
           setCorrectionComment('');
@@ -1279,7 +1292,15 @@ const MyPlace = () => {
                     return (
                       <List.Item key={dateKey}>
                         <Flex vertical style={{ width: '100%' }} gap={6}>
-                          <Text strong>{dateKey}</Text>
+                          <div
+                            style={{
+                              padding: '6px 10px',
+                              background: '#fafafa',
+                              borderRadius: 6,
+                            }}
+                          >
+                            <Text strong>{dateKey}</Text>
+                          </div>
                           {intervals.map((interval, idx) => (
                             <Flex
                               key={idx}
@@ -1444,9 +1465,17 @@ const MyPlace = () => {
                                 const dayList = [
                                   ...(copy[dateKey] ?? []),
                                 ];
+                                const lastInterval = dayList[dayList.length - 1];
+                                const defaultStart = lastInterval
+                                  ? lastInterval.end
+                                  : '09:00';
+                                const startMoment = dayjs(
+                                  `${dateKey} ${defaultStart}`,
+                                  'DD.MM.YYYY HH:mm',
+                                );
                                 dayList.push({
-                                  start: '09:00',
-                                  end: '18:00',
+                                  start: defaultStart,
+                                  end: startMoment.add(1, 'hour').format('HH:mm'),
                                   kind: 'DEFAULT',
                                 });
                                 copy[dateKey] = dayList;
@@ -1465,6 +1494,15 @@ const MyPlace = () => {
                   }}
                 />
               </div>
+            )}
+
+            {hasInvalidCorrectionIntervals && (
+              <Text type="danger">
+                {t(
+                  'myPlace.invalidIntervalWarning',
+                  'Время окончания должно быть позже начала.',
+                )}
+              </Text>
             )}
 
             <Text>
