@@ -74,7 +74,7 @@ export class UsersService implements OnModuleInit {
           phone: null,
           isSystemUser: true,
           passwordSentAt: new Date(),
-          passwordUpdatedAt: null,
+          passwordUpdatedAt: new Date(),
         },
       });
     }
@@ -137,7 +137,7 @@ export class UsersService implements OnModuleInit {
         phone: data.phone?.trim() || null,
         isSystemUser: false,
         passwordSentAt: new Date(),
-        passwordUpdatedAt: null,
+        passwordUpdatedAt: new Date(),
       },
       include: {
         org: {
@@ -196,6 +196,7 @@ export class UsersService implements OnModuleInit {
       data: {
         password: passwordHash,
         passwordSentAt: new Date(),
+        passwordUpdatedAt: new Date(),
       },
     });
 
