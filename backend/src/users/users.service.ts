@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -133,9 +132,8 @@ export class UsersService implements OnModuleInit {
         phone: data.phone?.trim() || null,
         isSystemUser: false,
 
-        passwordWasSent: sendPassword,
         createdWithAutoSend: sendPassword,
-        lastPasswordEmailAt: sendPassword ? new Date() : null,
+        passwordSentAt: sendPassword ? new Date() : null,
         passwordUpdatedAt: null,
       },
       select: this.baseSelect(),
@@ -170,10 +168,8 @@ export class UsersService implements OnModuleInit {
 
     // 🔴 FIX: строгое условие «уже актуален»
     if (
-      user.passwordWasSent &&
-      user.lastPasswordEmailAt &&
-      (!user.passwordUpdatedAt ||
-        user.passwordUpdatedAt <= user.lastPasswordEmailAt)
+      user.passwordSentAt &&
+      (!user.passwordUpdatedAt || user.passwordUpdatedAt <= user.passwordSentAt)
     ) {
       return {
         success: false,
@@ -188,8 +184,7 @@ export class UsersService implements OnModuleInit {
       where: { id },
       data: {
         password: passwordHash,
-        passwordWasSent: true,
-        lastPasswordEmailAt: new Date(),
+        passwordSentAt: new Date(),
       },
     });
 
@@ -266,7 +261,7 @@ export class UsersService implements OnModuleInit {
     if (payload.password) {
       updateData.password = await bcrypt.hash(payload.password, 10);
       updateData.passwordUpdatedAt = new Date();
-      updateData.passwordWasSent = false;
+      updateData.passwordSentAt = null;
     }
 
     if (payload.email !== undefined) updateData.email = payload.email.trim();
