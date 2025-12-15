@@ -5,6 +5,8 @@ import {
   DatePicker,
   Descriptions,
   Flex,
+  Form,
+  Input,
   List,
   Modal,
   Result,
@@ -17,7 +19,7 @@ import {
   Select,
   TimePicker,
 } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import dayjs, { Dayjs } from 'dayjs';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -29,12 +31,15 @@ import {
   SlotStatus,
   ShiftKind,
   StatisticsResponse,
+  changeMyPassword,
   fetchCurrentWorkplace,
   fetchMySchedule,
   fetchStatistics,
   requestAssignmentScheduleAdjustment,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -190,6 +195,14 @@ const MyPlace = () => {
   const [correctionIntervals, setCorrectionIntervals] =
     useState<DayIntervalsMap>({});
   const [isSendingCorrection, setIsSendingCorrection] = useState(false);
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] =
+    useState(false);
+  const [changePasswordError, setChangePasswordError] = useState('');
+  const [passwordForm] = Form.useForm();
+
+  const changePasswordMutation = useMutation({
+    mutationFn: changeMyPassword,
+  });
 
   // диапазон для личной статистики
   const [statsRange, setStatsRange] = useState<[Dayjs, Dayjs] | null>([
@@ -632,6 +645,17 @@ const MyPlace = () => {
 
   return (
     <Flex vertical gap={16}>
+      <Flex justify="flex-end">
+        <Button
+          onClick={() => {
+            setChangePasswordError('');
+            passwordForm.resetFields();
+            setIsChangePasswordModalOpen(true);
+          }}
+        >
+          Сменить пароль
+        </Button>
+      </Flex>
       {/* Блок 1: Мои назначения */}
       <Card title={t('myPlace.assignmentsTitle', 'Мои назначения')}>
         {isLoading ? (
@@ -1518,6 +1542,82 @@ const MyPlace = () => {
             />
           </Flex>
         )}
+      </Modal>
+
+      <Modal
+        open={isChangePasswordModalOpen}
+        title="Смена пароля"
+        onCancel={() => {
+          setIsChangePasswordModalOpen(false);
+          setChangePasswordError('');
+          passwordForm.resetFields();
+        }}
+        okText="Сохранить"
+        cancelText={t('common.cancel', 'Отмена')}
+        onOk={() => passwordForm.submit()}
+        confirmLoading={changePasswordMutation.isPending}
+        okButtonProps={{ disabled: changePasswordMutation.isPending }}
+      >
+        <Form
+          layout="vertical"
+          form={passwordForm}
+          onFinish={async (values) => {
+            setChangePasswordError('');
+            try {
+              await changePasswordMutation.mutateAsync({
+                currentPassword: values.currentPassword,
+                newPassword: values.newPassword,
+              });
+              setIsChangePasswordModalOpen(false);
+              message.success('Пароль успешно изменён');
+            } catch (err: any) {
+              const backendMessage =
+                err?.response?.data?.message || err?.response?.data?.error;
+              setChangePasswordError(
+                Array.isArray(backendMessage)
+                  ? backendMessage.join(', ')
+                  : backendMessage || err?.message || 'Не удалось изменить пароль',
+              );
+            }
+          }}
+        >
+          <Form.Item
+            label="Текущий пароль"
+            name="currentPassword"
+            rules={[{ required: true, message: 'Укажите текущий пароль' }]}
+          >
+            <Input.Password autoComplete="current-password" />
+          </Form.Item>
+          <Form.Item
+            label="Новый пароль"
+            name="newPassword"
+            rules={[{ required: true, message: 'Введите новый пароль' }]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item
+            label="Подтвердите новый пароль"
+            name="confirmPassword"
+            dependencies={['newPassword']}
+            rules={[
+              { required: true, message: 'Повторите новый пароль' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('newPassword') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('Пароли не совпадают'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+
+          {changePasswordError && (
+            <Text type="danger">{changePasswordError}</Text>
+          )}
+        </Form>
       </Modal>
     </Flex>
   );
