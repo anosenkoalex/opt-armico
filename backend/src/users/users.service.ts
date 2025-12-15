@@ -166,7 +166,12 @@ export class UsersService implements OnModuleInit {
           <h2>Добро пожаловать в CRM</h2>
           <p><b>Логин:</b> ${email}<br/>
           <b>Пароль:</b> ${rawPassword}</p>
-          <a href="${appUrl.replace(/\/$/, '')}/login">Войти</a>
+          <a
+            href="${appUrl.replace(/\/$/, '')}/login"
+            style="display:inline-block;padding:10px 16px;background:#1677ff;color:#fff;text-decoration:none;border-radius:6px;margin-top:12px"
+          >
+            Go to CRM
+          </a>
         </div>
         `,
       ).catch((e) => this.logger.error(e));
@@ -180,49 +185,40 @@ export class UsersService implements OnModuleInit {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Пользователь не найден');
 
-    // 🔴 FIX: строгое условие «уже актуален»
-    if (
-      user.passwordSentAt &&
-      (!user.passwordUpdatedAt || user.passwordUpdatedAt <= user.passwordSentAt)
-    ) {
-      return {
-        success: false,
-        message: 'У пользователя уже есть актуальный пароль на почте',
-      };
-    }
-
-    const newPassword = this.generatePassword();
-    const passwordHash = await bcrypt.hash(newPassword, 10);
-
-    await this.prisma.user.update({
-      where: { id },
-      data: {
-        password: passwordHash,
-        passwordSentAt: new Date(),
-        passwordUpdatedAt: new Date(),
-      },
-    });
-
     const appUrl =
       this.configService.get<string>('APP_URL') ??
       'https://grant-thornton.online';
 
-    await this.emailService.sendHtmlEmail(
-      user.email,
-      'Новый пароль к CRM',
-      `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
-        <h2>Новый пароль</h2>
-        <p><b>Логин:</b> ${user.email}<br/>
-        <b>Пароль:</b> ${newPassword}</p>
-        <a href="${appUrl.replace(/\/$/, '')}/login">Войти</a>
-      </div>
-      `,
-    );
+    await this.emailService
+      .sendHtmlEmail(
+        user.email,
+        'Пароль к CRM',
+        `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
+          <h2>Пароль для входа</h2>
+          <p><b>Логин:</b> ${user.email}<br/>
+          <b>Пароль:</b> ${user.password}</p>
+          <a
+            href="${appUrl.replace(/\/$/, '')}/login"
+            style="display:inline-block;padding:10px 16px;background:#1677ff;color:#fff;text-decoration:none;border-radius:6px;margin-top:12px"
+          >
+            Go to CRM
+          </a>
+        </div>
+        `,
+      )
+      .catch((e) => this.logger.error(e));
+
+    await this.prisma.user.update({
+      where: { id },
+      data: {
+        passwordSentAt: new Date(),
+      },
+    });
 
     return {
       success: true,
-      message: 'Новый пароль отправлен на почту',
+      message: 'Пароль отправлен на почту',
     };
   }
 
