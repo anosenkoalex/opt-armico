@@ -116,9 +116,7 @@ export class EmailService {
       const handleData = (chunk: Buffer) => {
         data += chunk.toString('utf-8');
         const lines = data.split(/\r?\n/).filter(Boolean);
-        if (lines.length === 0) {
-          return;
-        }
+        if (lines.length === 0) return;
 
         const lastLine = lines[lines.length - 1];
         if (/^\d{3} /.test(lastLine)) {
@@ -182,9 +180,11 @@ export class EmailService {
     const endsAt = payload.endsAt
       ? formatter.format(payload.endsAt)
       : 'бессрочно';
+
     const loginUrl = this.appUrl
       ? `${this.appUrl.replace(/\/$/, '')}/login`
       : '';
+
     const greetingName = payload.fullName?.trim() || payload.email;
     const workplaceName = payload.workplaceName?.trim()
       ? ` — ${payload.workplaceName.trim()}`
@@ -198,17 +198,10 @@ export class EmailService {
     ];
 
     if (loginUrl) {
-      lines.push(
-        '',
-        'Вы можете посмотреть подробности и свой график по ссылке:',
-        loginUrl,
-      );
+      lines.push('', 'Ссылка для входа в CRM:', loginUrl);
     }
 
-    lines.push(
-      '',
-      'Это письмо отправлено автоматически, отвечать на него не нужно.',
-    );
+    lines.push('', 'Это письмо отправлено автоматически.');
 
     const textBody = lines.join('\n');
     const encodedSubject = this.encodeSubject('Новое назначение в Armico');
@@ -270,23 +263,23 @@ export class EmailService {
       this.ensureResponse(
         await this.sendCommand(socket, 'AUTH LOGIN'),
         [334],
-        'AUTH LOGIN (challenge)',
+        'AUTH LOGIN',
       );
       this.ensureResponse(
         await this.sendCommand(
           socket,
-          Buffer.from(this.user ?? '', 'utf-8').toString('base64'),
+          Buffer.from(this.user ?? '').toString('base64'),
         ),
         [334],
-        'AUTH LOGIN (username)',
+        'AUTH LOGIN USER',
       );
       this.ensureResponse(
         await this.sendCommand(
           socket,
-          Buffer.from(this.pass ?? '', 'utf-8').toString('base64'),
+          Buffer.from(this.pass ?? '').toString('base64'),
         ),
         [235],
-        'AUTH LOGIN (password)',
+        'AUTH LOGIN PASS',
       );
       this.ensureResponse(
         await this.sendCommand(socket, `MAIL FROM:<${this.from}>`),
@@ -301,14 +294,14 @@ export class EmailService {
       this.ensureResponse(
         await this.sendCommand(socket, 'DATA'),
         [354],
-        'DATA command',
+        'DATA',
       );
 
       socket.write(`${rawMessage}\r\n.\r\n`);
-      this.ensureResponse(await this.readResponse(socket), [250], 'DATA send');
-      this.ensureResponse(await this.sendCommand(socket, 'QUIT'), [221], 'QUIT');
-    } catch (error) {
-      this.logger.error('Не удалось отправить email', error as Error);
+      this.ensureResponse(await this.readResponse(socket), [250], 'SEND');
+      await this.sendCommand(socket, 'QUIT');
+    } catch (e) {
+      this.logger.error('SMTP error', e as Error);
       throw new ServiceUnavailableException('Не удалось отправить email');
     } finally {
       socket.end();
@@ -324,28 +317,34 @@ export class EmailService {
   }
 
   /**
-   * Тестовое письмо (для Dev-консоли)
+   * Тестовое письмо
    */
   async sendTestEmail(email: string, text?: string) {
-    if (!this.isConfigured) {
-      throw new ServiceUnavailableException(
-        'Отправка email пока не настроена (SMTP-шлюз не подключен)',
-      );
-    }
-
-    const bodyLines = [
-      'Тестовое письмо из Armico.',
-      '',
-      text?.trim() ||
-        'Если вы видите это письмо, SMTP-настройки сохранены и соединение работает.',
-    ];
-
     const message = this.buildPlainTextMessage(
       email,
       'Тестовое письмо из Armico',
-      bodyLines.join('\n'),
+      text || 'SMTP работает',
     );
-
     await this.sendRawMail(email, message);
+  }
+
+  /**
+   * ✅ НОВЫЙ МЕТОД: HTML-письмо (для создания пользователя и кнопки "Оповестить")
+   */
+  async sendHtmlEmail(to: string, subject: string, html: string) {
+    const encodedSubject = this.encodeSubject(subject);
+
+    const headers = [
+      `From: ${this.from}`,
+      `To: ${to}`,
+      `Date: ${new Date().toUTCString()}`,
+      `Subject: ${encodedSubject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: 8bit',
+    ];
+
+    const raw = `${headers.join('\r\n')}\r\n\r\n${html}`;
+    await this.sendRawMail(to, raw);
   }
 }

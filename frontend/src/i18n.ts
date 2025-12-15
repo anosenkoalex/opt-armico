@@ -48,6 +48,7 @@ void i18n.use(initReactI18next).init({
           title: 'Рабочие места',
           manageTitle: 'Управление рабочими местами',
           code: 'Код',
+          color: 'Цвет', // ✅ добавили перевод для workplaces.color
           location: 'Локация',
           status: 'Статус',
           actions: 'Действия',

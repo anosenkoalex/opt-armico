@@ -9,6 +9,7 @@ import UsersPage from '../pages/Users.js';
 import UsersCreatePage from '../pages/UsersCreate.js';
 import DevPage from '../pages/DevPage.js';
 import StatisticsPage from '../pages/Statistics.js';
+import AssignmentAdjustmentsPage from '../pages/AssignmentAdjustments.js';
 import AppLayout from '../components/Layout.js';
 import { useAuth } from '../context/AuthContext.js';
 
@@ -23,20 +24,31 @@ const ProtectedRoute = () => {
 };
 
 const AppRoutes = () => {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+
+  // Куда по умолчанию редиректим залогиненного пользователя
+  const defaultPath = user?.role === 'USER' ? '/my-place' : '/dashboard';
 
   const element = useRoutes([
     {
       path: '/login',
-      element: token ? <Navigate to="/dashboard" replace /> : <Login />,
+      // если уже залогинен — отправляем по роли
+      element: token ? <Navigate to={defaultPath} replace /> : <Login />,
     },
     {
       path: '/',
       element: <ProtectedRoute />,
       children: [
-        { index: true, element: <Navigate to="/dashboard" replace /> },
+        // корневой маршрут → редирект по роли
+        { index: true, element: <Navigate to={defaultPath} replace /> },
+
+        // общий дашборд (для админов/менеджеров, но технически доступен всем с токеном)
         { path: 'dashboard', element: <Dashboard /> },
+
+        // страница сотрудника
         { path: 'my-place', element: <MyPlace /> },
+
+        // админские/менеджерские страницы
         { path: 'workplaces', element: <WorkplacesPage /> },
         { path: 'assignments', element: <AssignmentsPage /> },
         { path: 'planner', element: <PlannerPage /> },
@@ -44,11 +56,15 @@ const AppRoutes = () => {
         { path: 'users/create', element: <UsersCreatePage /> },
         { path: 'statistics', element: <StatisticsPage /> },
 
-        // 🔒 dev-панель, доступна только после логина
+        // страница запросов корректировок по назначениям
+        { path: 'schedule-adjustments', element: <AssignmentAdjustmentsPage /> },
+
+        // dev-панель (защита по роли уже внутри Layout/страниц)
         { path: 'dev', element: <DevPage /> },
       ],
     },
-    { path: '*', element: <Navigate to="/dashboard" replace /> },
+    // любой левый URL → тоже по роли
+    { path: '*', element: <Navigate to={defaultPath} replace /> },
   ]);
 
   return element;

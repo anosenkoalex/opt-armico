@@ -1,7 +1,10 @@
 import {
+  Badge,
   Button,
   Card,
+  Checkbox,
   DatePicker,
+  Divider,
   Form,
   Modal,
   Result,
@@ -9,11 +12,11 @@ import {
   Space,
   Table,
   Tag,
+  TimePicker,
   Typography,
   message,
-  TimePicker,
-  Checkbox,
-  Divider,
+  Row,
+  Col,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined } from '@ant-design/icons';
@@ -25,23 +28,29 @@ import { useTranslation } from 'react-i18next';
 import type { AxiosError } from 'axios';
 import {
   Assignment,
+  AssignmentShift,
   AssignmentStatus,
   PaginatedResponse,
+  ScheduleAdjustment,
   User,
   Workplace,
+  approveScheduleAdjustment,
+  completeAssignment,
   createAssignment,
+  deleteAssignment,
   fetchAssignments,
   fetchAssignmentsFromTrash,
+  fetchScheduleAdjustments,
   fetchUsers,
   fetchWorkplaces,
-  notifyAssignment,
-  updateAssignment,
-  completeAssignment,
-  deleteAssignment,
-  restoreAssignment,
   hardDeleteTrashAssignments,
+  notifyAssignment,
+  rejectScheduleAdjustment,
+  restoreAssignment,
+  updateAssignment,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
+import { useNavigate } from 'react-router-dom';
 
 const statusOptions: AssignmentStatus[] = ['ACTIVE', 'ARCHIVED'];
 
@@ -64,6 +73,13 @@ type ShiftRow = {
   startTime: Dayjs | null;
   endTime: Dayjs | null;
   kind: ShiftKindType;
+};
+
+// смена, распарсенная из комментария сотрудника (для "стало")
+type ProposedShift = {
+  startsAt: string; // HH:mm
+  endsAt: string; // HH:mm
+  kindLabel: string | null;
 };
 
 // сортируем смены по дате и времени начала, чтобы все даты шли подряд
@@ -102,7 +118,6 @@ const RU_MONTHS_SHORT = [
 
 // 🔧 helper: сформировать CSV по сменам: даты — в заголовках
 const buildAssignmentsCsv = (rows: Assignment[]): string => {
-  // соберём все уникальные даты по всем выбранным назначениям
   const dateSet = new Set<string>();
 
   rows.forEach((item) => {
@@ -117,20 +132,17 @@ const buildAssignmentsCsv = (rows: Assignment[]): string => {
         dateSet.add(dKey);
       });
     } else if (item.startsAt) {
-      // fallback для старых назначений без shifts: только один день, день начала
       const dKey = dayjs(item.startsAt).format('YYYY-MM-DD');
       dateSet.add(dKey);
     }
   });
 
-  const dateKeysSorted = Array.from(dateSet).sort(); // YYYY-MM-DD
+  const dateKeysSorted = Array.from(dateSet).sort();
 
-  // заголовки для дат вида "17.ноя"
   const dateHeaders = dateKeysSorted.map((dKey) => {
     const [, monthStr, dayStr] = dKey.split('-');
     const monthIndex = Math.max(0, Math.min(11, Number(monthStr) - 1));
     const monthLabel = RU_MONTHS_SHORT[monthIndex] ?? monthStr;
-    // удаляем ведущий ноль у дня
     const dayNum = String(Number(dayStr));
     return `${dayNum}.${monthLabel}`;
   });
@@ -149,7 +161,6 @@ const buildAssignmentsCsv = (rows: Assignment[]): string => {
     const anyItem: any = item as any;
     const shifts = Array.isArray(anyItem.shifts) ? anyItem.shifts : [];
 
-    // карта: дата (YYYY-MM-DD) -> массив интервалов "HH:mm:ss-HH:mm:ss"
     const dateToIntervals: Record<string, string[]> = {};
 
     if (shifts.length > 0) {
@@ -170,7 +181,6 @@ const buildAssignmentsCsv = (rows: Assignment[]): string => {
         dateToIntervals[dKey].push(interval);
       });
     } else if (item.startsAt) {
-      // fallback: только глобальный интервал в день начала
       const start = dayjs(item.startsAt);
       const end = item.endsAt ? dayjs(item.endsAt) : start;
       const dKey = start.format('YYYY-MM-DD');
@@ -200,7 +210,6 @@ const buildAssignmentsCsv = (rows: Assignment[]): string => {
       ...dateCols,
     ];
 
-    // экранируем ; и " для CSV (разделитель — ;)
     return cols
       .map((value) => {
         const v = value ?? '';
@@ -242,6 +251,7 @@ const AssignmentsPage = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const [filters, setFilters] = useState<{
     userId?: string;
@@ -263,16 +273,13 @@ const AssignmentsPage = () => {
   >(null);
   const [applyTimeToAll, setApplyTimeToAll] = useState<boolean>(true);
 
-  // режим: обычные назначения / корзина
   const [showTrash, setShowTrash] = useState(false);
-
-  // выбранные строки (для массовых операций в корзине)
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
-
-  // 🟠 временная подсветка сотрудника, у которого ошибка по лимиту назначений
   const [highlightedUserId, setHighlightedUserId] = useState<string | null>(
     null,
   );
+  const [adjustmentsModalAssignment, setAdjustmentsModalAssignment] =
+    useState<Assignment | null>(null);
 
   const isAdmin = user?.role === 'SUPER_ADMIN';
   const isManager = user?.role === 'MANAGER';
@@ -312,14 +319,12 @@ const AssignmentsPage = () => {
     enabled: canManageAssignments,
   });
 
-  // ⚙️ тянем всех несистемных юзеров (бэк уже фильтрует isSystemUser=false),
-  // а на фронте дополнительно оставляем только role=USER
   const usersQuery = useQuery<PaginatedResponse<User>>({
     queryKey: ['users', 'for-assignments'],
     queryFn: () =>
       fetchUsers({
         page: 1,
-        pageSize: 100, // <= важно: на бэке стоит max(100)
+        pageSize: 100,
       }),
     enabled: canManageAssignments,
     keepPreviousData: true,
@@ -331,6 +336,51 @@ const AssignmentsPage = () => {
     enabled: canManageAssignments,
   });
 
+  // 🔍 тянем только PENDING-запросы корректировок
+  const scheduleAdjustmentsQuery = useQuery({
+    queryKey: ['schedule-adjustments', 'for-assignments', 'PENDING'],
+    queryFn: () =>
+      fetchScheduleAdjustments({
+        page: 1,
+        pageSize: 50,
+        status: 'PENDING',
+      }),
+    enabled: canManageAssignments,
+    staleTime: 30_000,
+  });
+
+  // универсально достаём список запросов: data или items
+  const adjustments: ScheduleAdjustment[] = useMemo(() => {
+    const raw: any = scheduleAdjustmentsQuery.data;
+    if (!raw) return [];
+    return (raw.items ?? raw.data ?? []) as ScheduleAdjustment[];
+  }, [scheduleAdjustmentsQuery.data]);
+
+  // только PENDING-запросы (для индикатора и подсветки)
+  const pendingAdjustments: ScheduleAdjustment[] = useMemo(
+    () => adjustments.filter((a) => a.status === 'PENDING'),
+    [adjustments],
+  );
+
+  // количество PENDING-запросов для индикатора
+  const adjustmentsCount = useMemo(() => {
+    const raw: any = scheduleAdjustmentsQuery.data;
+    const base = pendingAdjustments.length;
+    const metaTotal = raw?.meta?.total ?? raw?.total;
+    return typeof metaTotal === 'number' ? metaTotal : base;
+  }, [scheduleAdjustmentsQuery.data, pendingAdjustments]);
+
+  // для подсветки назначений с PENDING-запросами
+  const assignmentsWithAdjustment = useMemo(() => {
+    const set = new Set<string>();
+    pendingAdjustments.forEach((adj) => {
+      if (adj.assignmentId) {
+        set.add(adj.assignmentId);
+      }
+    });
+    return set;
+  }, [pendingAdjustments]);
+
   const handleAssignmentError = (
     error: unknown,
     userIdForHighlight?: string,
@@ -341,13 +391,11 @@ const AssignmentsPage = () => {
     if (typeof msg === 'string') {
       const normalized = msg.toLowerCase();
 
-      // пересечения по времени — здесь подсветка не нужна
       if (normalized.includes('overlap') || normalized.includes('пересек')) {
         message.error(t('assignments.overlapError'));
         return;
       }
 
-      // 🟠 если знаем userId — всегда подсвечиваем его строки, независимо от текста
       if (userIdForHighlight) {
         setHighlightedUserId(userIdForHighlight);
         setTimeout(() => {
@@ -369,12 +417,19 @@ const AssignmentsPage = () => {
     message.error(msg ?? t('common.error'));
   };
 
+  const queryInvalidateAll = () => {
+    void queryClient.invalidateQueries({ queryKey: ['assignments'] });
+    void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
+    void queryClient.invalidateQueries({ queryKey: ['feed'] });
+    void queryClient.invalidateQueries({
+      queryKey: ['schedule-adjustments'],
+    });
+  };
+
   const createMutation = useMutation({
     mutationFn: (payload: any) => createAssignment(payload),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
-      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryInvalidateAll();
       message.success(t('assignments.created'));
       setIsModalOpen(false);
       setEditingAssignment(null);
@@ -397,9 +452,7 @@ const AssignmentsPage = () => {
       values: Parameters<typeof updateAssignment>[1];
     }) => updateAssignment(id, values),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
-      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryInvalidateAll();
       message.success(t('assignments.updated'));
       setIsModalOpen(false);
       setEditingAssignment(null);
@@ -443,9 +496,7 @@ const AssignmentsPage = () => {
   const completeMutation = useMutation({
     mutationFn: (assignmentId: string) => completeAssignment(assignmentId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
-      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryInvalidateAll();
       message.success(t('assignments.completed'));
     },
     onError: (error: unknown) => {
@@ -453,13 +504,10 @@ const AssignmentsPage = () => {
     },
   });
 
-  // 🗑 мягкое удаление (в корзину)
   const deleteMutation = useMutation({
     mutationFn: (assignmentId: string) => deleteAssignment(assignmentId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
-      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryInvalidateAll();
       message.success(
         t('assignments.deleted', 'Назначение перемещено в корзину'),
       );
@@ -469,13 +517,10 @@ const AssignmentsPage = () => {
     },
   });
 
-  // ♻️ восстановление из корзины
   const restoreMutation = useMutation({
     mutationFn: (assignmentId: string) => restoreAssignment(assignmentId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
-      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryInvalidateAll();
       message.success(
         t('assignments.restoredFromTrash', 'Назначение восстановлено'),
       );
@@ -486,13 +531,10 @@ const AssignmentsPage = () => {
     },
   });
 
-  // 🗑 окончательное удаление выбранных из корзины
   const hardDeleteTrashMutation = useMutation({
     mutationFn: (ids: string[]) => hardDeleteTrashAssignments(ids),
     onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ['assignments'] });
-      void queryClient.invalidateQueries({ queryKey: ['planner-matrix'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryInvalidateAll();
       setSelectedRowKeys([]);
       message.success(
         t(
@@ -506,14 +548,52 @@ const AssignmentsPage = () => {
     },
   });
 
-  // Универсально достаём список назначений из data/items
+  const approveAdjustmentMutation = useMutation({
+    mutationFn: (payload: { id: string; managerComment?: string }) =>
+      approveScheduleAdjustment(payload.id, {
+        managerComment: payload.managerComment,
+      }),
+    onSuccess: () => {
+      queryInvalidateAll();
+      message.success(
+        t(
+          'assignments.adjustmentApproved',
+          'Корректировка расписания одобрена',
+        ),
+      );
+      setAdjustmentsModalAssignment(null);
+    },
+    onError: (error: unknown) => {
+      handleAssignmentError(error);
+    },
+  });
+
+  const rejectAdjustmentMutation = useMutation({
+    mutationFn: (payload: { id: string; managerComment?: string }) =>
+      rejectScheduleAdjustment(payload.id, {
+        managerComment: payload.managerComment,
+      }),
+    onSuccess: () => {
+      queryInvalidateAll();
+      message.success(
+        t(
+          'assignments.adjustmentRejected',
+          'Корректировка расписания отклонена',
+        ),
+      );
+      setAdjustmentsModalAssignment(null);
+    },
+    onError: (error: unknown) => {
+      handleAssignmentError(error);
+    },
+  });
+
   const assignments = useMemo(() => {
     const raw = assignmentsQuery.data as any;
     if (!raw) return [];
     return raw.data ?? raw.items ?? [];
   }, [assignmentsQuery.data]);
 
-  // Универсально достаём пагинацию
   const pagination = useMemo(() => {
     const raw = assignmentsQuery.data as any;
     if (!raw) {
@@ -531,10 +611,8 @@ const AssignmentsPage = () => {
     };
   }, [assignmentsQuery.data, page, pageSize]);
 
-  // единая функция открытия модалки редактирования (и для кнопки, и для клика по датам)
   const handleOpenEdit = useCallback(
     (record: Assignment) => {
-      // в режиме корзины редактирование не даём
       if (showTrash) {
         return;
       }
@@ -557,7 +635,6 @@ const AssignmentsPage = () => {
         : [];
 
       if (recordShifts.length > 0) {
-        // если с бэка пришли смены — восстанавливаем их
         const rows: ShiftRow[] = recordShifts.map(
           (s: any, index: number) => ({
             key: s.id ?? `${record.id}-${index}`,
@@ -581,7 +658,6 @@ const AssignmentsPage = () => {
         });
         setShiftRows(sortShiftRows(rows));
       } else {
-        // fallback: строим из общего периода, если есть
         const start = dayjs(record.startsAt);
         const end = record.endsAt ? dayjs(record.endsAt) : start;
 
@@ -593,7 +669,6 @@ const AssignmentsPage = () => {
         });
 
         if (startDate.isSame(endDate, 'day') && record.endsAt) {
-          // если в один день — ставим одну смену по фактическому времени
           setShiftRows(
             sortShiftRows([
               {
@@ -606,7 +681,6 @@ const AssignmentsPage = () => {
             ]),
           );
         } else {
-          // иначе — только даты, времена проставит пользователь
           const rows: ShiftRow[] = [];
           let current = startDate.clone();
           while (
@@ -684,8 +758,6 @@ const AssignmentsPage = () => {
         title: t('assignments.timeframe'),
         dataIndex: 'startsAt',
         key: 'timeframe',
-        // в списке показываем только ДАТЫ,
-        // по клику — попап с графиком (кроме корзины)
         render: (_value: unknown, record: Assignment) => (
           <Button
             type="link"
@@ -703,19 +775,32 @@ const AssignmentsPage = () => {
         title: t('assignments.status.title'),
         dataIndex: 'status',
         key: 'status',
-        render: (value: AssignmentStatus) => (
-          <Tag color={value === 'ACTIVE' ? 'green' : 'default'}>
-            {value === 'ACTIVE'
-              ? t('assignments.status.active')
-              : t('assignments.status.archived')}
-          </Tag>
-        ),
+        render: (value: AssignmentStatus, record: Assignment) => {
+          const hasAdjustment = assignmentsWithAdjustment.has(record.id);
+
+          return (
+            <Space size="small">
+              <Tag color={value === 'ACTIVE' ? 'green' : 'default'}>
+                {value === 'ACTIVE'
+                  ? t('assignments.status.active')
+                  : t('assignments.status.archived')}
+              </Tag>
+              {hasAdjustment && (
+                <Tag color="orange">
+                  {t(
+                    'assignments.hasAdjustmentRequest',
+                    'Есть запрос корректировки',
+                  )}
+                </Tag>
+              )}
+            </Space>
+          );
+        },
       },
       {
         title: t('workplaces.actions'),
         key: 'actions',
         render: (_value, record) => {
-          // 🔄 режим корзины — только восстановление
           if (showTrash) {
             return (
               <Space size="small">
@@ -752,6 +837,8 @@ const AssignmentsPage = () => {
             record.status === 'ACTIVE' && Boolean(record.user?.email);
           const canComplete = record.status === 'ACTIVE';
           const canDelete = record.status === 'ARCHIVED';
+
+          const hasAdjustment = assignmentsWithAdjustment.has(record.id);
 
           return (
             <Space size="small">
@@ -823,7 +910,18 @@ const AssignmentsPage = () => {
                 {t('assignments.notify')}
               </Button>
 
-              {/* 🗑 появляется только для ARCHIVED, кидает в корзину */}
+              {hasAdjustment && (
+                <Button
+                  type="link"
+                  onClick={() => setAdjustmentsModalAssignment(record)}
+                >
+                  {t(
+                    'assignments.viewAdjustments',
+                    'Запрос корректировки',
+                  )}
+                </Button>
+              )}
+
               <Button
                 type="link"
                 danger
@@ -868,6 +966,7 @@ const AssignmentsPage = () => {
       restoreMutation.isPending,
       showTrash,
       highlightedUserId,
+      assignmentsWithAdjustment,
     ],
   );
 
@@ -925,7 +1024,6 @@ const AssignmentsPage = () => {
     );
   };
 
-  // ➕ добавить ещё один интервал в тот же день – после последнего интервала этого дня
   const addIntervalForDate = (date: Dayjs) => {
     setShiftRows((prev) => {
       const newRow: ShiftRow = {
@@ -946,7 +1044,6 @@ const AssignmentsPage = () => {
     });
   };
 
-  // 🗑 удалить конкретный интервал
   const removeRow = (key: string) => {
     setShiftRows((prev) => prev.filter((r) => r.key !== key));
   };
@@ -1007,7 +1104,6 @@ const AssignmentsPage = () => {
         };
       });
 
-      // общий период назначения — min(startsAt) ... max(endsAt)
       const globalStartsAt = shifts.reduce((min, s) => {
         const d = dayjs(s.startsAt);
         return d.isBefore(min) ? d : min;
@@ -1060,7 +1156,6 @@ const AssignmentsPage = () => {
       label: `${item.code} — ${item.name}`,
     })) ?? [];
 
-  // группируем смены по дате для аккуратного отображения блоками
   const groupedShiftRows = useMemo(() => {
     const map: Record<string, ShiftRow[]> = {};
     shiftRows.forEach((row) => {
@@ -1073,7 +1168,6 @@ const AssignmentsPage = () => {
     return map;
   }, [shiftRows]);
 
-  // rowSelection только в режиме корзины
   const rowSelection = showTrash
     ? {
         selectedRowKeys,
@@ -1081,7 +1175,6 @@ const AssignmentsPage = () => {
       }
     : undefined;
 
-  // хэндлеры массовых действий
   const getSelectedIds = () => selectedRowKeys.map(String);
 
   const handleExportSelected = () => {
@@ -1206,11 +1299,184 @@ const AssignmentsPage = () => {
           }
         }
 
-        // если экспорт ок — жёсткое удаление
         hardDeleteTrashMutation.mutate(ids);
       },
     });
   };
+
+  const adjustmentsForModal: ScheduleAdjustment[] = useMemo(() => {
+    if (!adjustmentsModalAssignment) return [];
+    return pendingAdjustments.filter(
+      (adj) => adj.assignmentId === adjustmentsModalAssignment.id,
+    );
+  }, [adjustmentsModalAssignment, pendingAdjustments]);
+
+  const assignmentIntervalText =
+    adjustmentsModalAssignment &&
+    `${dayjs(adjustmentsModalAssignment.startsAt).format('DD.MM.YYYY')} → ${
+      adjustmentsModalAssignment.endsAt
+        ? dayjs(adjustmentsModalAssignment.endsAt).format('DD.MM.YYYY')
+        : t('dashboard.openEnded')
+    }`;
+
+  // Оригинальные смены назначения по датам — для «Назначенный график (было)»
+  const originalShiftsByDate = useMemo(() => {
+    const map: Record<string, AssignmentShift[]> = {};
+    if (!adjustmentsModalAssignment?.shifts) return map;
+
+    adjustmentsModalAssignment.shifts.forEach((shift) => {
+      const key = dayjs(shift.date).format('YYYY-MM-DD');
+      if (!map[key]) map[key] = [];
+      map[key].push(shift);
+    });
+
+    return map;
+  }, [adjustmentsModalAssignment]);
+
+  // парсим комментарий сотрудника и получаем полный предложенный график
+  const parseRequestedScheduleFromComment = (
+    comment?: string | null,
+  ): Record<string, ProposedShift[]> => {
+    const result: Record<string, ProposedShift[]> = {};
+    if (!comment) return result;
+
+    const marker = 'Интервалы, которые сотрудник предлагает:';
+    const idx = comment.indexOf(marker);
+    if (idx === -1) return result;
+
+    const lines = comment
+      .slice(idx + marker.length)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const re =
+      /^(\d{2}\.\d{2}\.\d{4}):\s+(\d{2}:\d{2})\s*→\s*(\d{2}:\d{2})(?:\s*\((.+)\))?$/;
+
+    lines.forEach((line) => {
+      const match = line.match(re);
+      if (!match) return;
+
+      const [, dateStr, startStr, endStr, kindLabel] = match;
+      const [dayStr, monthStr, yearStr] = dateStr.split('.');
+      const dateKey = dayjs(
+        `${yearStr}-${monthStr}-${dayStr}`,
+        'YYYY-MM-DD',
+      ).format('YYYY-MM-DD');
+
+      if (!result[dateKey]) result[dateKey] = [];
+      result[dateKey].push({
+        startsAt: startStr,
+        endsAt: endStr,
+        kindLabel: kindLabel ?? null,
+      });
+    });
+
+    return result;
+  };
+
+  // предложенный график по датам — из комментария
+  const proposedShiftsByDate = useMemo(() => {
+    const anyWithComment = adjustmentsForModal.find(
+      (adj) => adj.comment && adj.comment.trim(),
+    );
+    if (!anyWithComment) return {};
+    return parseRequestedScheduleFromComment(anyWithComment.comment);
+  }, [adjustmentsForModal]);
+
+  // Список всех дат, которые нужно показывать в было/стало
+  const datesForComparison = useMemo(() => {
+    const set = new Set<string>();
+
+    Object.keys(originalShiftsByDate).forEach((d) => set.add(d));
+    Object.keys(proposedShiftsByDate).forEach((d) => set.add(d));
+
+    return Array.from(set).sort();
+  }, [originalShiftsByDate, proposedShiftsByDate]);
+
+  const getShiftKindLabel = (kind: string | null | undefined) => {
+    if (!kind || kind === 'DEFAULT') {
+      return t('assignments.shiftKind.default', 'Обычная смена');
+    }
+    if (kind === 'OFFICE') {
+      return t('assignments.shiftKind.office', 'Офис');
+    }
+    if (kind === 'REMOTE') {
+      return t('assignments.shiftKind.remote', 'Удалёнка');
+    }
+    if (kind === 'DAY_OFF') {
+      return t('assignments.shiftKind.dayOff', 'Day off / больничный');
+    }
+    return kind;
+  };
+
+  const formatTime = (iso: string | null | undefined) =>
+    iso ? dayjs(iso).format('HH:mm') : '--:--';
+
+  // Резюме изменений для блока "Комментарии сотрудника"
+  const changesSummaryByDate = useMemo(() => {
+    const result: { dateKey: string; text: string }[] = [];
+
+    datesForComparison.forEach((dateKey) => {
+      const orig = originalShiftsByDate[dateKey] ?? [];
+      const next = proposedShiftsByDate[dateKey] ?? [];
+
+      if (!orig.length && !next.length) {
+        return;
+      }
+
+      const origTimes = new Set(
+        orig.map(
+          (s) =>
+            `${formatTime(s.startsAt)}-${formatTime(s.endsAt)}`,
+        ),
+      );
+      const nextTimes = new Set(
+        next.map((s) => `${s.startsAt}-${s.endsAt}`),
+      );
+
+      const sameTimes =
+        origTimes.size === nextTimes.size &&
+        [...origTimes].every((v) => nextTimes.has(v));
+
+      const origKinds = new Set(
+        orig.map((s) => (s.kind ?? 'DEFAULT').toString()),
+      );
+      const nextKinds = new Set(
+        next.length
+          ? next.map((s) =>
+              (s.kindLabel ?? 'DEFAULT').toString().toUpperCase(),
+            )
+          : origKinds,
+      );
+
+      const sameKinds =
+        origKinds.size === nextKinds.size &&
+        [...origKinds].every((v) => nextKinds.has(v));
+
+      if (sameTimes && sameKinds) {
+        return;
+      }
+
+      const dateLabel = dayjs(dateKey).format('DD.MM.YYYY');
+      const parts: string[] = [];
+      if (!sameTimes) parts.push('время');
+      if (!sameKinds) parts.push('статус');
+
+      let text: string;
+      if (parts.length === 2) {
+        text = `${dateLabel}: корректировал время и статус`;
+      } else {
+        text = `${dateLabel}: корректировал ${parts[0]}`;
+      }
+
+      result.push({ dateKey, text });
+    });
+
+    return result;
+  }, [datesForComparison, originalShiftsByDate, proposedShiftsByDate]);
+
+  const hasChangesSummary = changesSummaryByDate.length > 0;
 
   return (
     <Card
@@ -1237,6 +1503,24 @@ const AssignmentsPage = () => {
           >
             {t('assignments.viewTrash', 'Корзина')}
           </Button>
+
+          {/* 🔔 кнопка перехода на /schedule-adjustments с индикатором количества */}
+          <Badge
+            count={adjustmentsCount}
+            size="small"
+            overflowCount={99}
+            offset={[8, 0]}
+          >
+            <Button
+              type="default"
+              onClick={() => navigate('/schedule-adjustments')}
+            >
+              {t(
+                'assignments.scheduleAdjustmentsButton',
+                'Запросы на корректировку',
+              )}
+            </Button>
+          </Badge>
 
           {!showTrash && (
             <Button
@@ -1369,6 +1653,7 @@ const AssignmentsPage = () => {
         }}
       />
 
+      {/* Модалка создания/редактирования назначения */}
       <Modal
         title={
           editingAssignment
@@ -1628,9 +1913,206 @@ const AssignmentsPage = () => {
               </Space>
             </>
           )}
-
-          {/* старый isOpenEnded больше не нужен, поэтому убрали */}
         </Form>
+      </Modal>
+
+      {/* 🔔 Модалка запросов корректировок по назначению */}
+      <Modal
+        open={!!adjustmentsModalAssignment}
+        width={900}
+        title={t(
+          'assignments.adjustmentsModalTitle',
+          'Запросы корректировки по назначению',
+        )}
+        onCancel={() => setAdjustmentsModalAssignment(null)}
+        footer={null}
+      >
+        {!adjustmentsModalAssignment || adjustmentsForModal.length === 0 ? (
+          <Typography.Text>
+            {t(
+              'assignments.adjustmentsModalEmpty',
+              'По этому назначению нет запросов корректировки.',
+            )}
+          </Typography.Text>
+        ) : (
+          <>
+            {assignmentIntervalText && (
+              <>
+                <Typography.Text strong>
+                  {t(
+                    'assignments.adjustmentAssignmentInterval',
+                    'Интервал назначения',
+                  )}
+                  : {assignmentIntervalText}
+                </Typography.Text>
+                <Divider />
+              </>
+            )}
+
+            <Card
+              size="small"
+              style={{ marginBottom: 16 }}
+              bodyStyle={{ padding: 16 }}
+            >
+              <Row gutter={24}>
+                <Col xs={24} md={12}>
+                  <Typography.Text strong>
+                    Назначенный график (было)
+                  </Typography.Text>
+                  <div style={{ marginTop: 8 }}>
+                    {datesForComparison.map((dateKey) => {
+                      const dateLabel = dayjs(dateKey).format('DD.MM.YYYY');
+                      const shifts = originalShiftsByDate[dateKey] ?? [];
+
+                      return (
+                        <Typography.Paragraph
+                          key={dateKey}
+                          style={{ marginBottom: 8 }}
+                        >
+                          <div style={{ fontWeight: 500 }}>{dateLabel}</div>
+                          {shifts.length > 0 ? (
+                            shifts.map((s) => {
+                              const time = `${formatTime(
+                                s.startsAt,
+                              )} → ${formatTime(s.endsAt)}`;
+                              const kindLabel = getShiftKindLabel(s.kind);
+                              return (
+                                <div key={s.id ?? `${time}-${kindLabel}`}>
+                                  {time} ({kindLabel})
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div>
+                              {t(
+                                'assignments.adjustments.noOriginal',
+                                'Смен не было',
+                              )}
+                            </div>
+                          )}
+                        </Typography.Paragraph>
+                      );
+                    })}
+                  </div>
+                </Col>
+
+                <Col xs={24} md={12}>
+                  <Typography.Text strong>
+                    Предложенная корректировка (стало)
+                  </Typography.Text>
+                  <div style={{ marginTop: 8 }}>
+                    {datesForComparison.map((dateKey) => {
+                      const dateLabel = dayjs(dateKey).format('DD.MM.YYYY');
+                      const list = proposedShiftsByDate[dateKey] ?? [];
+
+                      return (
+                        <Typography.Paragraph
+                          key={dateKey}
+                          style={{ marginBottom: 8 }}
+                        >
+                          <div style={{ fontWeight: 500 }}>{dateLabel}</div>
+                          {list.length > 0 ? (
+                            list.map((adj, index) => {
+                              const time = `${adj.startsAt} → ${adj.endsAt}`;
+                              const kindLabel =
+                                adj.kindLabel ??
+                                t(
+                                  'assignments.shiftKind.default',
+                                  'Обычная смена',
+                                );
+                              return (
+                                <div key={`${time}-${index}`}>
+                                  {time} ({kindLabel})
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div>
+                              {t(
+                                'assignments.adjustments.noProposal',
+                                'Без изменений',
+                              )}
+                            </div>
+                          )}
+                        </Typography.Paragraph>
+                      );
+                    })}
+                  </div>
+                </Col>
+              </Row>
+            </Card>
+
+            {hasChangesSummary && (
+              <>
+                <Typography.Title
+                  level={5}
+                  style={{ marginTop: 16, marginBottom: 8 }}
+                >
+                  {t(
+                    'assignments.adjustments.comments',
+                    'Комментарии сотрудника',
+                  )}
+                </Typography.Title>
+                <Card size="small" bodyStyle={{ padding: 16 }}>
+                  {changesSummaryByDate.map((item) => (
+                    <Typography.Paragraph
+                      key={item.dateKey}
+                      style={{ marginBottom: 4 }}
+                    >
+                      {item.text}
+                    </Typography.Paragraph>
+                  ))}
+                </Card>
+              </>
+            )}
+
+            <Space
+              style={{
+                marginTop: 24,
+                width: '100%',
+                justifyContent: 'flex-end',
+                display: 'flex',
+              }}
+            >
+              <Button
+                type="primary"
+                loading={approveAdjustmentMutation.isPending}
+                onClick={() => {
+                  const payloads = adjustmentsForModal.map((adj) => ({
+                    id: adj.id,
+                    managerComment: undefined as string | undefined,
+                  }));
+
+                  (async () => {
+                    for (const p of payloads) {
+                      await approveAdjustmentMutation.mutateAsync(p);
+                    }
+                  })().catch(() => undefined);
+                }}
+              >
+                {t('common.approve', 'Одобрить')}
+              </Button>
+              <Button
+                danger
+                loading={rejectAdjustmentMutation.isPending}
+                onClick={() => {
+                  const payloads = adjustmentsForModal.map((adj) => ({
+                    id: adj.id,
+                    managerComment: undefined as string | undefined,
+                  }));
+
+                  (async () => {
+                    for (const p of payloads) {
+                      await rejectAdjustmentMutation.mutateAsync(p);
+                    }
+                  })().catch(() => undefined);
+                }}
+              >
+                {t('common.reject', 'Отклонить')}
+              </Button>
+            </Space>
+          </>
+        )}
       </Modal>
     </Card>
   );

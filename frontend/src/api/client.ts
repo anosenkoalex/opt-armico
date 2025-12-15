@@ -40,6 +40,8 @@ export type Workplace = {
   name: string;
   location?: string | null;
   isActive: boolean;
+  /** цвет для планировщика, HEX/rgba/название */
+  color?: string | null;
   createdAt: string;
   updatedAt: string;
   org?: Org;
@@ -48,28 +50,23 @@ export type Workplace = {
 export type AssignmentStatus = 'ACTIVE' | 'ARCHIVED';
 
 /**
- * Тип смены — должен совпадать с Prisma enum ShiftKind
- * DEFAULT / OFFICE / REMOTE / DAY_OFF
+ * Тип смены
  */
 export type ShiftKind = 'DEFAULT' | 'OFFICE' | 'REMOTE' | 'DAY_OFF';
 
-/**
- * Смена в назначении (ответ бэка)
- */
+export type ScheduleAdjustmentStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
 export type AssignmentShift = {
   id: string;
   assignmentId: string;
-  date: string; // день смены
-  startsAt: string; // начало
-  endsAt: string; // конец
-  kind: ShiftKind; // тип смены
+  date: string;
+  startsAt: string;
+  endsAt: string;
+  kind: ShiftKind;
   createdAt: string;
   updatedAt: string;
 };
 
-/**
- * Смена при создании/обновлении (запрос на бэк)
- */
 export type AssignmentShiftInput = {
   date: string;
   startsAt: string;
@@ -89,9 +86,31 @@ export type Assignment = {
     email: string;
     fullName?: string | null;
   };
-  workplace?: Pick<Workplace, 'id' | 'code' | 'name' | 'location'>;
-  // 👇 смены
+  workplace?: Pick<Workplace, 'id' | 'code' | 'name' | 'location' | 'color'>;
   shifts?: AssignmentShift[];
+};
+
+export type ScheduleAdjustment = {
+  id: string;
+  assignmentId: string;
+  userId: string;
+  date: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  kind: ShiftKind;
+  comment: string | null;
+  status: ScheduleAdjustmentStatus;
+  managerComment?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignment?:
+    | {
+        id: string;
+        workplace?: { id: string; code: string; name: string } | null;
+        user?: Pick<User, 'id' | 'email' | 'fullName'> | null;
+      }
+    | null;
+  user?: Pick<User, 'id' | 'email' | 'fullName'> | null;
 };
 
 export type NotificationType =
@@ -115,7 +134,7 @@ export type FeedItemMeta = {
   id: string;
   action: FeedItemAction;
   user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'> | null;
-  workplace?: { id: string; code: string; name: string };
+  workplace?: { id: string; code: string; name: string; color?: string | null };
   org?: { id: string; name: string; slug: string } | null;
   period?: { from: string; to: string | null };
   status?: AssignmentStatus;
@@ -185,7 +204,7 @@ export type MeProfile = {
 };
 
 export type CurrentWorkplaceResponse = {
-  workplace: Pick<Workplace, 'id' | 'code' | 'name' | 'location'> | null;
+  workplace: Pick<Workplace, 'id' | 'code' | 'name' | 'location' | 'color'> | null;
   assignment: Assignment | null;
   history: Assignment[];
 };
@@ -200,7 +219,13 @@ export type PlannerMatrixSlot = {
   user?: Pick<User, 'id' | 'email' | 'fullName' | 'position'> | null;
   org?: Pick<Org, 'id' | 'name' | 'slug'> | null;
   workplace?:
-    | { id: string; code: string; name: string; location?: string | null }
+    | {
+        id: string;
+        code: string;
+        name: string;
+        location?: string | null;
+        color?: string | null;
+      }
     | null;
 };
 
@@ -221,6 +246,8 @@ export type PlannerMatrixResponse = {
   rows: PlannerMatrixRow[];
 };
 
+/* -------------------- API INSTANCE -------------------- */
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:3000',
 });
@@ -229,14 +256,11 @@ api.interceptors.request.use((config) => {
   if (typeof window === 'undefined') {
     return config;
   }
-
   const token = window.localStorage.getItem('armico_token');
-
   if (token) {
     config.headers = config.headers ?? {};
     config.headers.Authorization = `Bearer ${token}`;
   }
-
   return config;
 });
 
@@ -247,10 +271,11 @@ api.interceptors.response.use(
       window.localStorage.removeItem('armico_token');
       window.dispatchEvent(new Event('armico:unauthorized'));
     }
-
     return Promise.reject(error);
   },
 );
+
+/* -------------------- AUTH -------------------- */
 
 export const login = async (payload: LoginPayload) => {
   const { data } = await api.post<AuthResponse>('/auth/login', payload);
@@ -262,12 +287,15 @@ export const fetchMeProfile = async () => {
   return data;
 };
 
+/* ✅ текущая точка /me/current-workplace */
 export const fetchCurrentWorkplace = async () => {
   const { data } = await api.get<CurrentWorkplaceResponse>(
     '/me/current-workplace',
   );
   return data;
 };
+
+/* -------------------- NOTIFICATIONS -------------------- */
 
 export const fetchNotifications = async (take = 10) => {
   const { data } = await api.get<Notification[]>(`/notifications/me`, {
@@ -276,14 +304,14 @@ export const fetchNotifications = async (take = 10) => {
   return data;
 };
 
+/* -------------------- ORGS & WORKPLACES -------------------- */
+
 export const fetchAdminFeed = async (params?: {
   take?: number;
   userId?: string;
   orgId?: string;
 }) => {
-  const { data } = await api.get<FeedItem[]>(`/feed/admin`, {
-    params,
-  });
+  const { data } = await api.get<FeedItem[]>(`/feed/admin`, { params });
   return data;
 };
 
@@ -291,9 +319,7 @@ export const fetchRecentFeed = async (params?: {
   take?: number;
   orgId?: string;
 }) => {
-  const { data } = await api.get<FeedItem[]>(`/feed/recent`, {
-    params,
-  });
+  const { data } = await api.get<FeedItem[]>(`/feed/recent`, { params });
   return data;
 };
 
@@ -309,17 +335,13 @@ export const fetchWorkplaces = async (params: {
   return data;
 };
 
-export const fetchOrgs = async () => {
-  const { data } = await api.get<Org[]>('/orgs');
-  return data;
-};
-
 export const createWorkplace = async (payload: {
   orgId: string;
   code: string;
   name: string;
   location?: string;
   isActive?: boolean;
+  color?: string | null;
 }) => {
   const { data } = await api.post<Workplace>('/workplaces', payload);
   return data;
@@ -333,6 +355,7 @@ export const updateWorkplace = async (
     name: string;
     location?: string;
     isActive?: boolean;
+    color?: string | null;
   }>,
 ) => {
   const { data } = await api.patch<Workplace>(`/workplaces/${id}`, payload);
@@ -342,6 +365,13 @@ export const updateWorkplace = async (
 export const deleteWorkplace = async (id: string) => {
   await api.delete(`/workplaces/${id}`);
 };
+
+export const fetchOrgs = async () => {
+  const { data } = await api.get<Org[]>('/orgs');
+  return data;
+};
+
+/* -------------------- ASSIGNMENTS -------------------- */
 
 export const fetchAssignments = async (params: {
   userId?: string;
@@ -360,42 +390,10 @@ export const fetchAssignments = async (params: {
         page: number;
         pageSize: number;
       }
-  >('/assignments', {
-    params,
-  });
+  >('/assignments', { params });
   return data;
 };
 
-/**
- * Список назначений в корзине (deletedAt != null)
- */
-export const fetchAssignmentsFromTrash = async (params: {
-  userId?: string;
-  workplaceId?: string;
-  status?: AssignmentStatus;
-  from?: string;
-  to?: string;
-  page?: number;
-  pageSize?: number;
-}) => {
-  const { data } = await api.get<
-    | PaginatedResponse<Assignment>
-    | {
-        items: Assignment[];
-        total: number;
-        page: number;
-        pageSize: number;
-      }
-  >('/assignments/trash', {
-    params,
-  });
-  return data;
-};
-
-/**
- * Создание назначения с набором смен.
- * shifts — тот массив, который ты собираешь в AssignmentsPage.
- */
 export const createAssignment = async (payload: {
   userId: string;
   workplaceId: string;
@@ -427,32 +425,43 @@ export const notifyAssignment = async (id: string) => {
   await api.post(`/assignments/${id}/notify`);
 };
 
-// ✅ Завершить назначение (перевод в ARCHIVED, выставление endsAt на бэке)
 export const completeAssignment = async (id: string) => {
   const { data } = await api.post<Assignment>(`/assignments/${id}/complete`);
   return data;
 };
 
-/**
- * Мягкое удаление назначения (в корзину)
- */
 export const deleteAssignment = async (id: string) => {
   await api.delete(`/assignments/${id}`);
 };
 
-/**
- * Восстановление назначения из корзины
- */
 export const restoreAssignment = async (id: string) => {
   const { data } = await api.post<Assignment>(`/assignments/${id}/restore`);
   return data;
 };
 
-/**
- * 📥 Скачать назначения из корзины (по списку id) в виде файла (Excel/CSV).
- * Бэк должен вернуть Excel / CSV (application/vnd.*), а мы принимаем как Blob.
- * Ручка: POST /assignments/trash/export (body: { ids: string[] })
- */
+export const fetchAssignmentsFromTrash = async (params: {
+  userId?: string;
+  workplaceId?: string;
+  status?: AssignmentStatus;
+  from?: string;
+  to?: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const { data } = await api.get<
+    | PaginatedResponse<Assignment>
+    | {
+        items: Assignment[];
+        total: number;
+        page: number;
+        pageSize: number;
+      }
+  >('/assignments/trash', { params });
+  return data;
+};
+
+/* -------------------- TRASH OPERATIONS -------------------- */
+
 export const exportTrashAssignments = async (ids: string[]) => {
   const response = await api.post(
     '/assignments/trash/export',
@@ -465,10 +474,6 @@ export const exportTrashAssignments = async (ids: string[]) => {
   return response.data as Blob;
 };
 
-/**
- * 🗑️ Окончательно удалить назначения из корзины (hard delete).
- * Ручка: POST /assignments/trash/delete (body: { ids: string[] })
- */
 export const hardDeleteTrashAssignments = async (ids: string[]) => {
   const { data } = await api.post<{ deletedCount: number }>(
     '/assignments/trash/delete',
@@ -477,11 +482,6 @@ export const hardDeleteTrashAssignments = async (ids: string[]) => {
   return data;
 };
 
-/**
- * 📥🗑️ Экспортировать и сразу удалить (export + hard delete).
- * Бэк возвращает файл (Excel/CSV), мы принимаем как Blob.
- * Ручка: POST /assignments/trash/export-and-delete (body: { ids: string[] })
- */
 export const exportAndHardDeleteTrashAssignments = async (ids: string[]) => {
   const response = await api.post(
     '/assignments/trash/export-and-delete',
@@ -494,6 +494,8 @@ export const exportAndHardDeleteTrashAssignments = async (ids: string[]) => {
   return response.data as Blob;
 };
 
+/* -------------------- USERS -------------------- */
+
 export const fetchUsers = async (params: {
   page?: number;
   pageSize?: number;
@@ -502,7 +504,7 @@ export const fetchUsers = async (params: {
 }) => {
   const page = params.page ?? 1;
   const requestedPageSize = params.pageSize ?? 50;
-  const safePageSize = Math.min(requestedPageSize, 100); // 👈 не даём уйти выше 100
+  const safePageSize = Math.min(requestedPageSize, 100);
 
   const { data } = await api.get<PaginatedResponse<User>>('/users', {
     params: {
@@ -551,6 +553,8 @@ export const sendUserPassword = async (id: string) => {
   await api.post(`/users/${id}/send-password`);
 };
 
+/* -------------------- PLANNER MATRIX -------------------- */
+
 export const fetchPlannerMatrix = async (params: {
   mode?: 'byUsers' | 'byWorkplaces';
   from: string;
@@ -564,6 +568,20 @@ export const fetchPlannerMatrix = async (params: {
   const { data } = await api.get<PlannerMatrixResponse>('/planner/matrix', {
     params,
   });
+  return data;
+};
+
+export const fetchMyPlannerMatrix = async (params: {
+  from: string;
+  to: string;
+  page?: number;
+  pageSize?: number;
+  status?: AssignmentStatus;
+}) => {
+  const { data } = await api.get<PlannerMatrixResponse>(
+    '/planner/my-matrix',
+    { params },
+  );
   return data;
 };
 
@@ -583,6 +601,8 @@ export const downloadPlannerExcel = async (params: {
   return response.data;
 };
 
+/* -------------------- MY SCHEDULE -------------------- */
+
 export const fetchMySchedule = async () => {
   const { data } = await api.get<Slot[]>('/me/schedule');
   return data;
@@ -593,10 +613,6 @@ export const confirmMySlot = async (slotId: string) => {
   return data;
 };
 
-/**
- * Запрос корректировки / обмена слота (day off, смена времени и т.п.)
- * Бэк: POST /me/slots/:slotId/request-swap
- */
 export const requestSlotAdjustment = async (
   slotId: string,
   payload: { comment: string },
@@ -608,15 +624,108 @@ export const requestSlotAdjustment = async (
   return data;
 };
 
-// старое имя для совместимости с существующим кодом
 export const requestSlotSwap = requestSlotAdjustment;
+
+export const requestAssignmentAdjustment = async (
+  assignmentId: string,
+  payload: { comment: string },
+) => {
+  const { data } = await api.post<ScheduleAdjustment>(
+    `/me/assignments/${assignmentId}/request-adjustment`,
+    payload,
+  );
+  return data;
+};
+
+export const requestAssignmentScheduleAdjustment = async (
+  assignmentId: string,
+  payload: {
+    date: string;
+    startsAt?: string;
+    endsAt?: string;
+    kind?: ShiftKind;
+    comment: string;
+  },
+) => {
+  const { data } = await api.post<ScheduleAdjustment>(
+    `/assignments/${assignmentId}/adjustments`,
+    payload,
+  );
+  return data;
+};
+
+/* -------------------- ADJUSTMENTS -------------------- */
+
+export const fetchScheduleAdjustments = async (params: {
+  page?: number;
+  pageSize?: number;
+  status?: ScheduleAdjustmentStatus;
+  userId?: string;
+  assignmentId?: string;
+}) => {
+  const resp = await api.get<any>('/assignments/adjustments', { params });
+
+  const raw = resp.data;
+  let items: ScheduleAdjustment[] = [];
+
+  if (Array.isArray(raw?.items)) {
+    items = raw.items as ScheduleAdjustment[];
+  } else if (Array.isArray(raw?.data)) {
+    items = raw.data as ScheduleAdjustment[];
+  } else if (Array.isArray(raw)) {
+    items = raw as ScheduleAdjustment[];
+  }
+
+  const page = raw?.page ?? raw?.meta?.page ?? params.page ?? 1;
+  const pageSize =
+    raw?.pageSize ?? raw?.meta?.pageSize ?? params.pageSize ?? items.length;
+  const total =
+    raw?.total ??
+    raw?.meta?.total ??
+    (Array.isArray(items) ? items.length : 0);
+
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    data: items,
+    meta: {
+      total,
+      page,
+      pageSize,
+    },
+  };
+};
+
+export const approveScheduleAdjustment = async (
+  adjustmentId: string,
+  payload?: { managerComment?: string },
+) => {
+  const { data } = await api.post<ScheduleAdjustment>(
+    `/assignments/adjustments/${adjustmentId}/approve`,
+    payload ?? {},
+  );
+  return data;
+};
+
+export const rejectScheduleAdjustment = async (
+  adjustmentId: string,
+  payload?: { managerComment?: string },
+) => {
+  const { data } = await api.post<ScheduleAdjustment>(
+    `/assignments/adjustments/${adjustmentId}/reject`,
+    payload ?? {},
+  );
+  return data;
+};
+
+/* -------------------- TOKEN -------------------- */
 
 export const decodeToken = (token: string): JwtPayload | null => {
   try {
     const [, payload] = token.split('.');
-    if (!payload) {
-      return null;
-    }
+    if (!payload) return null;
 
     const decoded = JSON.parse(atob(payload));
     return decoded as JwtPayload;
@@ -626,4 +735,90 @@ export const decodeToken = (token: string): JwtPayload | null => {
   }
 };
 
+/* -------------------- STATISTICS (НОВОЕ) -------------------- */
+
+export type StatisticsRow = {
+  shiftId: string;
+  date: string;
+  userId: string;
+  userName: string | null;
+  workplaceId: string;
+  workplaceName: string | null;
+  assignmentStatus: AssignmentStatus;
+  shiftKind: ShiftKind;
+  startsAt: string;
+  endsAt: string | null;
+  hours: number;
+};
+
+export type StatisticsByUser = {
+  userId: string;
+  userName: string | null;
+  totalHours: number;
+  byKind: Record<string, number>;
+};
+
+export type StatisticsByWorkplace = {
+  workplaceId: string;
+  workplaceName: string | null;
+  totalHours: number;
+};
+
+export type StatisticsResponse = {
+  totalShifts: number;
+  totalHours: number;
+  byUser: StatisticsByUser[];
+  byWorkplace: StatisticsByWorkplace[];
+  rows: StatisticsRow[];
+};
+
+export type FetchStatisticsParams = {
+  from: string;
+  to: string;
+  userId?: string;
+  workplaceId?: string;
+  assignmentStatuses?: AssignmentStatus[];
+  kinds?: ShiftKind[];
+};
+
+export async function fetchStatistics(params: FetchStatisticsParams) {
+  const search = new URLSearchParams();
+
+  search.set('from', params.from);
+  search.set('to', params.to);
+
+  if (params.userId) search.set('userId', params.userId);
+  if (params.workplaceId) search.set('workplaceId', params.workplaceId);
+
+  if (params.assignmentStatuses?.length) {
+    for (const st of params.assignmentStatuses) {
+      search.append('assignmentStatuses', st);
+    }
+  }
+
+  if (params.kinds?.length) {
+    for (const k of params.kinds) {
+      search.append('kinds', k);
+    }
+  }
+
+  const res = await api.get<StatisticsResponse>(
+    `/statistics?${search.toString()}`,
+  );
+  return res.data;
+}
+
 export default api;
+
+/* -------------------- ME / SECURITY -------------------- */
+
+export const changeMyPassword = async (payload: {
+  currentPassword: string;
+  newPassword: string;
+}) => {
+  const { data } = await api.patch<{ success: true }>(
+    '/me/change-password',
+    payload,
+  );
+  return data;
+};

@@ -22,15 +22,12 @@ services:
       - redis
     ports:
       - '3000:3000'
+    env_file:
+      - ./backend/.env
     environment:
-      # База
       DATABASE_URL: postgresql://armico:armico@postgres:5432/armico
-      # Redis
       REDIS_URL: redis://redis:6379/0
-      # Сервер
       PORT: '3000'
-      # JWT
-      JWT_SECRET: your-secret-key
     restart: unless-stopped
 
   frontend:

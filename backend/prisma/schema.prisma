@@ -38,68 +38,79 @@ enum NotificationType {
   ASSIGNMENT_MOVED
 }
 
-// 🔥 НОВЫЙ enum для типа смены
+// 🔥 enum для типа смены
 enum ShiftKind {
-  DEFAULT   // обычная смена
-  OFFICE    // работа в офисе
-  REMOTE    // удалёнка
-  DAY_OFF   // выходной / day off
+  DEFAULT
+  OFFICE
+  REMOTE
+  DAY_OFF
 }
 
-// 🔥 НОВЫЙ enum для статуса запроса корректировки расписания
+// 🔥 enum для статуса запроса корректировки расписания
 enum AdjustmentStatus {
-  PENDING   // ожидает решения
-  APPROVED  // одобрен
-  REJECTED  // отклонён
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model Org {
   id          String        @id @default(cuid())
   name        String
   slug        String        @unique
+
   users       User[]
   workplaces  Workplace[]
   slots       Slot[]
   constraints Constraint[]
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
 
 model User {
-  id            String                 @id @default(cuid())
+  id            String   @id @default(cuid())
   orgId         String?
-  org           Org?                   @relation(fields: [orgId], references: [id])
-  email         String                 @unique
+  org           Org?     @relation(fields: [orgId], references: [id])
+
+  email         String   @unique
   password      String
   fullName      String?
   position      String?
-  role          UserRole               @default(USER)
+  role          UserRole @default(USER)
 
-  isSystemUser  Boolean                @default(false)
+  isSystemUser  Boolean  @default(false)
   phone         String?
+
+  // 🔐 ЛОГИКА ПАРОЛЕЙ / ПОЧТЫ (ФИНАЛ)
+  passwordUpdatedAt DateTime?
+  passwordSentAt    DateTime?
 
   assignments   Assignment[]
   notifications Notification[]
   slots         Slot[]
   constraints   Constraint[]
-  // 🔥 запросы корректировок расписания от этого пользователя
+
   scheduleAdjustments AssignmentAdjustment[]
 
-  createdAt     DateTime               @default(now())
-  updatedAt     DateTime               @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 model Workplace {
-  id          String       @id @default(cuid())
+  id          String   @id @default(cuid())
   orgId       String
-  org         Org          @relation(fields: [orgId], references: [id])
+  org         Org      @relation(fields: [orgId], references: [id])
+
   code        String
   name        String
   location    String?
-  isActive    Boolean      @default(true)
+  isActive    Boolean  @default(true)
+  color       String?
+
   assignments Assignment[]
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([orgId, code])
 }
@@ -110,25 +121,33 @@ model Plan {
   startsAt  DateTime
   endsAt    DateTime
   status    PlanStatus @default(DRAFT)
+
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+
   slots     Slot[]
 }
 
 model Slot {
-  id        String     @id @default(cuid())
+  id        String   @id @default(cuid())
+
   planId    String
-  plan      Plan       @relation(fields: [planId], references: [id])
+  plan      Plan     @relation(fields: [planId], references: [id])
+
   orgId     String
-  org       Org        @relation(fields: [orgId], references: [id])
+  org       Org      @relation(fields: [orgId], references: [id])
+
   userId    String
-  user      User       @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
   dateStart DateTime
   dateEnd   DateTime
+
   status    SlotStatus @default(PLANNED)
   colorCode String?
   note      String?
   locked    Boolean    @default(false)
+
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
@@ -141,60 +160,64 @@ model Constraint {
   id        String   @id @default(cuid())
   type      String
   payload   Json
+
   userId    String?
   user      User?    @relation(fields: [userId], references: [id])
+
   orgId     String?
   org       Org?     @relation(fields: [orgId], references: [id])
+
   createdAt DateTime @default(now())
 }
 
 model Assignment {
   id          String           @id @default(cuid())
+
   userId      String
   user        User             @relation(fields: [userId], references: [id])
+
   workplaceId String
   workplace   Workplace        @relation(fields: [workplaceId], references: [id])
+
   startsAt    DateTime
   endsAt      DateTime?
+
   status      AssignmentStatus @default(ACTIVE)
+
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
-
-  /// мягкое удаление — если не null, значит лежит в корзине
   deletedAt   DateTime?
 
   shifts      AssignmentShift[]
-  // 🔥 запросы корректировок, связанные с этим назначением
   adjustments AssignmentAdjustment[]
 }
 
 model AssignmentShift {
-  id           String      @id @default(cuid())
+  id           String     @id @default(cuid())
+
   assignmentId String
-  assignment   Assignment  @relation(fields: [assignmentId], references: [id])
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
 
-  /// Дата смены (день)
   date         DateTime
-
-  /// Конкретное время начала/окончания смены
   startsAt     DateTime
   endsAt       DateTime
+  kind         ShiftKind  @default(DEFAULT)
 
-  /// 🔥 Тип смены (офис, удалёнка, day off и т.д.)
-  kind         ShiftKind   @default(DEFAULT)
-
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   @@index([assignmentId, date])
 }
 
 model Notification {
   id        String           @id @default(cuid())
+
   userId    String
   user      User             @relation(fields: [userId], references: [id])
+
   type      NotificationType
   payload   Json
+
   createdAt DateTime         @default(now())
   readAt    DateTime?
 }
@@ -209,7 +232,6 @@ model SmsSettings {
   updatedAt DateTime @updatedAt
 }
 
-// 🔥 НОВАЯ таблица запросов на корректировку расписания
 model AssignmentAdjustment {
   id           String            @id @default(cuid())
 
@@ -219,19 +241,12 @@ model AssignmentAdjustment {
   userId       String
   user         User              @relation(fields: [userId], references: [id])
 
-  /// День, к которому относится корректировка
   date         DateTime
-
-  /// Если надо скорректировать конкретные часы — можно заполнить
   startsAt     DateTime?
   endsAt       DateTime?
+  kind         ShiftKind          @default(DAY_OFF)
 
-  /// Какую смену хочет по сути пользователь (чаще всего DAY_OFF)
-  kind         ShiftKind        @default(DAY_OFF)
-
-  /// Комментарий сотрудника (почему просит корректировку)
   comment          String
-  /// Комментарий менеджера при одобрении / отказе
   managerComment   String?
 
   status       AdjustmentStatus  @default(PENDING)

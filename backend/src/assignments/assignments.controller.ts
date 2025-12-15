@@ -31,25 +31,20 @@ import { z } from 'zod';
 
 // DTO для массовых действий с корзиной
 const bulkTrashActionSchema = z.object({
-  ids: z.array(z.string().min(1, 'id обязателен')).nonempty('Нужно указать хотя бы одно id'),
+  ids: z
+    .array(z.string().min(1, 'id обязателен'))
+    .nonempty('Нужно указать хотя бы одно id'),
 });
 
 type BulkTrashActionDto = z.infer<typeof bulkTrashActionSchema>;
 
 /**
  * 🔧 DTO для запроса корректировки расписания по назначению
- *
- * Пользователь указывает:
- * - дату (обязательна)
- * - опционально время начала/конца внутри дня
- * - опционально тип смены (DAY_OFF / OFFICE / REMOTE / DEFAULT)
- * - комментарий – обязательно (что хочет поменять)
  */
 const requestScheduleAdjustmentSchema = z.object({
   date: z
     .string()
     .min(1, 'Дата обязательна')
-    // допускаем как полный ISO, так и просто YYYY-MM-DD
     .refine(
       (val) =>
         !Number.isNaN(Date.parse(val)) ||
@@ -70,9 +65,7 @@ const requestScheduleAdjustmentSchema = z.object({
       (val) => !val || !Number.isNaN(Date.parse(val)),
       'Некорректный формат времени окончания',
     ),
-  kind: z
-    .enum(['DEFAULT', 'OFFICE', 'REMOTE', 'DAY_OFF'])
-    .optional(),
+  kind: z.enum(['DEFAULT', 'OFFICE', 'REMOTE', 'DAY_OFF']).optional(),
   comment: z.string().min(1, 'Комментарий обязателен').max(2000),
 });
 
@@ -86,9 +79,7 @@ export type RequestScheduleAdjustmentDto = z.infer<
 const listScheduleAdjustmentsSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  status: z
-    .enum(['PENDING', 'APPROVED', 'REJECTED'])
-    .optional(),
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional(),
   userId: z.string().optional(),
   assignmentId: z.string().optional(),
 });
@@ -99,7 +90,6 @@ export type ListScheduleAdjustmentsDto = z.infer<
 
 /**
  * 🔧 Решение по запросу корректировки (одобрить / отклонить)
- * Пока только опциональный комментарий менеджера.
  */
 const scheduleAdjustmentDecisionSchema = z.object({
   managerComment: z.string().max(2000).optional(),
@@ -147,90 +137,6 @@ export class AssignmentsController {
     return this.assignmentsService.findAllInTrash(query);
   }
 
-  @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  findOne(@Param('id') id: string) {
-    return this.assignmentsService.findOne(id);
-  }
-
-  @Patch(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  update(
-    @Param('id') id: string,
-    @Body(new ZodValidationPipe(updateAssignmentSchema))
-    payload: UpdateAssignmentDto,
-  ) {
-    return this.assignmentsService.update(id, payload);
-  }
-
-  /**
-   * Мягкое удаление назначения → в корзину
-   */
-  @Delete(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  softDelete(@Param('id') id: string) {
-    return this.assignmentsService.softDelete(id);
-  }
-
-  /**
-   * Восстановление назначения из корзины
-   */
-  @Post(':id/restore')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  restoreFromTrash(@Param('id') id: string) {
-    return this.assignmentsService.restoreFromTrash(id);
-  }
-
-  @Post(':id/notify')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  notify(@Param('id') id: string) {
-    return this.assignmentsService.notify(id);
-  }
-
-  // ✅ Завершение назначения (ARCHIVED + автозаполнение endsAt при необходимости)
-  @Post(':id/complete')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  complete(@Param('id') id: string) {
-    return this.assignmentsService.complete(id);
-  }
-
-  /**
-   * 📥 Экспорт выбранных назначений из корзины
-   * Возвращает данные в виде массива, фронт сам делает XLS/CSV/таблицу.
-   */
-  @Post('trash/export')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  exportFromTrash(
-    @Body(new ZodValidationPipe(bulkTrashActionSchema))
-    payload: BulkTrashActionDto,
-  ) {
-    return this.assignmentsService.exportFromTrash(payload.ids);
-  }
-
-  /**
-   * 🗑 Окончательное удаление выбранных назначений из корзины
-   */
-  @Post('trash/delete')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  bulkDeleteFromTrash(
-    @Body(new ZodValidationPipe(bulkTrashActionSchema))
-    payload: BulkTrashActionDto,
-  ) {
-    return this.assignmentsService.bulkDeleteFromTrash(payload.ids);
-  }
-
-  /**
-   * 📥 + 🗑 Экспорт + удаление (скачать и удалить)
-   */
-  @Post('trash/export-and-delete')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
-  exportAndDeleteFromTrash(
-    @Body(new ZodValidationPipe(bulkTrashActionSchema))
-    payload: BulkTrashActionDto,
-  ) {
-    return this.assignmentsService.exportAndDeleteFromTrash(payload.ids);
-  }
-
   // ================================================================
   //        🔔 БЛОК ЗАПРОСОВ НА КОРРЕКТИРОВКУ РАСПИСАНИЯ
   // ================================================================
@@ -239,8 +145,6 @@ export class AssignmentsController {
    * 📝 Пользователь запрашивает корректировку по конкретному назначению.
    *
    * POST /assignments/:id/adjustments
-   *
-   * Роли: обычный пользователь + менеджер/админ (на всякий случай)
    */
   @Post(':id/adjustments')
   @Roles(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.MANAGER)
@@ -260,6 +164,9 @@ export class AssignmentsController {
    * с фильтрами по статусу / сотруднику / назначению.
    *
    * GET /assignments/adjustments
+   *
+   * ВАЖНО: этот маршрут должен идти ДО @Get(':id'),
+   * иначе /assignments/adjustments будет обрабатываться как :id.
    */
   @Get('adjustments')
   @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
@@ -306,5 +213,76 @@ export class AssignmentsController {
       'REJECTED',
       payload,
     );
+  }
+
+  // ================================================================
+  //                    ОСТАЛЬНОЙ ФУНКЦИОНАЛ
+  // ================================================================
+
+  @Get(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  findOne(@Param('id') id: string) {
+    return this.assignmentsService.findOne(id);
+  }
+
+  @Patch(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  update(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(updateAssignmentSchema))
+    payload: UpdateAssignmentDto,
+  ) {
+    return this.assignmentsService.update(id, payload);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  softDelete(@Param('id') id: string) {
+    return this.assignmentsService.softDelete(id);
+  }
+
+  @Post(':id/restore')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  restoreFromTrash(@Param('id') id: string) {
+    return this.assignmentsService.restoreFromTrash(id);
+  }
+
+  @Post(':id/notify')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  notify(@Param('id') id: string) {
+    return this.assignmentsService.notify(id);
+  }
+
+  @Post(':id/complete')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  complete(@Param('id') id: string) {
+    return this.assignmentsService.complete(id);
+  }
+
+  @Post('trash/export')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  exportFromTrash(
+    @Body(new ZodValidationPipe(bulkTrashActionSchema))
+    payload: BulkTrashActionDto,
+  ) {
+    return this.assignmentsService.exportFromTrash(payload.ids);
+  }
+
+  @Post('trash/delete')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  bulkDeleteFromTrash(
+    @Body(new ZodValidationPipe(bulkTrashActionSchema))
+    payload: BulkTrashActionDto,
+  ) {
+    return this.assignmentsService.bulkDeleteFromTrash(payload.ids);
+  }
+
+  @Post('trash/export-and-delete')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  exportAndDeleteFromTrash(
+    @Body(new ZodValidationPipe(bulkTrashActionSchema))
+    payload: BulkTrashActionDto,
+  ) {
+    return this.assignmentsService.exportAndDeleteFromTrash(payload.ids);
   }
 }

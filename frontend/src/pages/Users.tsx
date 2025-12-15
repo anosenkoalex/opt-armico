@@ -10,9 +10,14 @@ import {
   Typography,
   message,
   Checkbox,
+  Tag,
+  Spin,
+  Flex,
+  Popover,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import dayjs from 'dayjs';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AxiosError } from 'axios';
@@ -25,6 +30,8 @@ import {
   fetchUsers,
   updateUser,
   sendUserPassword,
+  fetchAssignments,
+  type Assignment,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
@@ -32,6 +39,48 @@ type UsersQueryResult = PaginatedResponse<User>;
 
 // Только обычные роли, системные (SUPER_ADMIN) в списке не показываем
 const roleOptions: UserRole[] = ['USER', 'MANAGER'];
+
+type AssignmentsApiResponse =
+  | PaginatedResponse<Assignment>
+  | {
+      items: Assignment[];
+      total: number;
+      page: number;
+      pageSize: number;
+    };
+
+function formatHours(hours: number) {
+  const rounded2 = Math.round(hours * 100) / 100;
+  const isInt = Math.abs(rounded2 - Math.round(rounded2)) < 1e-9;
+  return isInt ? `${Math.round(rounded2)} ч` : `${rounded2} ч`;
+}
+
+function getShiftHours(shift: { startsAt?: string; endsAt?: string } | null) {
+  if (!shift?.startsAt || !shift?.endsAt) return 0;
+  const start = dayjs(shift.startsAt);
+  const end = dayjs(shift.endsAt);
+  const diffMin = end.diff(start, 'minute');
+  return Math.max(0, diffMin / 60);
+}
+
+function getPeriodFromShiftsOrAssignment(row: Assignment) {
+  const shifts = Array.isArray(row.shifts) ? row.shifts : [];
+
+  if (shifts.length > 0) {
+    const dates = shifts
+      .map((s) => dayjs(s.date))
+      .filter((d) => d.isValid())
+      .sort((a, b) => a.valueOf() - b.valueOf());
+
+    const from = dates[0]?.format('DD.MM.YYYY');
+    const to = dates[dates.length - 1]?.format('DD.MM.YYYY');
+    return { from, to };
+  }
+
+  const from = row.startsAt ? dayjs(row.startsAt).format('DD.MM.YYYY') : '';
+  const to = row.endsAt ? dayjs(row.endsAt).format('DD.MM.YYYY') : '';
+  return { from, to };
+}
 
 const UsersPage = () => {
   const { t } = useTranslation();
@@ -48,6 +97,12 @@ const UsersPage = () => {
   const [form] = Form.useForm();
 
   const isAdmin = user?.role === 'SUPER_ADMIN';
+
+  // ====== MODAL: назначения по сотруднику ======
+  const [assignmentsModalOpen, setAssignmentsModalOpen] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<Pick<User, 'id' | 'email' | 'fullName'> | null>(null);
+  const [assPage, setAssPage] = useState(1);
+  const [assPageSize, setAssPageSize] = useState(10);
 
   const usersQuery = useQuery<UsersQueryResult>({
     queryKey: ['users', { page, pageSize, ...filters }],
@@ -86,7 +141,7 @@ const UsersPage = () => {
       return;
     }
 
-    message.error(msg ?? t('common.error'));
+    message.error((msg as any) ?? t('common.error'));
   };
 
   const createMutation = useMutation({
@@ -148,6 +203,45 @@ const UsersPage = () => {
     },
   });
 
+  // ====== query: назначения выбранного сотрудника ======
+  const userAssignmentsQuery = useQuery<PaginatedResponse<Assignment>>({
+    queryKey: [
+      'user-assignments',
+      { userId: selectedUser?.id ?? null, page: assPage, pageSize: assPageSize },
+    ],
+    queryFn: async () => {
+      if (!selectedUser?.id) {
+        return {
+          data: [],
+          meta: { total: 0, page: assPage, pageSize: assPageSize },
+        };
+      }
+
+      const raw = (await fetchAssignments({
+        userId: selectedUser.id,
+        page: assPage,
+        pageSize: assPageSize,
+      })) as AssignmentsApiResponse;
+
+      // нормализация items -> data/meta
+      if (!Array.isArray((raw as any).data) && Array.isArray((raw as any).items)) {
+        const r = raw as any;
+        return {
+          data: r.items ?? [],
+          meta: {
+            total: r.total ?? (r.items?.length ?? 0),
+            page: r.page ?? assPage,
+            pageSize: r.pageSize ?? assPageSize,
+          },
+        };
+      }
+
+      return raw as PaginatedResponse<Assignment>;
+    },
+    enabled: isAdmin && assignmentsModalOpen && !!selectedUser?.id,
+    keepPreviousData: true,
+  });
+
   const columns: ColumnsType<User> = useMemo(
     () => [
       {
@@ -186,7 +280,8 @@ const UsersPage = () => {
           <Space size="small">
             <Button
               type="link"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 setEditingUser(record);
                 form.setFieldsValue({
                   fullName: record.fullName,
@@ -202,7 +297,8 @@ const UsersPage = () => {
 
             <Button
               type="link"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 sendPasswordMutation.mutate(record.id);
               }}
             >
@@ -212,7 +308,8 @@ const UsersPage = () => {
             <Button
               type="link"
               danger
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 Modal.confirm({
                   title: t('users.deleteConfirmTitle'),
                   content: t('users.deleteConfirmDescription', {
@@ -232,6 +329,112 @@ const UsersPage = () => {
       },
     ],
     [t, deleteMutation, form, sendPasswordMutation],
+  );
+
+  const assignmentColumns: ColumnsType<Assignment> = useMemo(
+    () => [
+      {
+        title: t('workplaces.title', 'Рабочее место'),
+        key: 'workplace',
+        render: (_: unknown, row: Assignment) => {
+          const w = row.workplace;
+          if (!w) return '—';
+          return `${w.code}${w.name ? ` — ${w.name}` : ''}`;
+        },
+      },
+      {
+        title: t('assignments.period', 'Период'),
+        key: 'period',
+        render: (_: unknown, row: Assignment) => {
+          const { from, to } = getPeriodFromShiftsOrAssignment(row);
+
+          if (!from && !to) return t('common.notSet', '—');
+          if (from && to) return `${from} — ${to}`;
+          return from || to;
+        },
+      },
+      {
+        title: t('assignments.statusLabel', 'Статус'),
+        dataIndex: 'status',
+        key: 'status',
+        render: (value: string) => (
+          <Tag color={value === 'ACTIVE' ? 'green' : 'default'}>
+            {value === 'ACTIVE'
+              ? t('common.active', 'Активно')
+              : t('assignments.archived', 'Архив')}
+          </Tag>
+        ),
+      },
+      {
+        title: t('assignments.shifts', 'Смены'),
+        key: 'shifts',
+        render: (_: unknown, row: Assignment) => {
+          const shifts = Array.isArray(row.shifts) ? row.shifts : [];
+          if (shifts.length === 0) return '—';
+
+          const sorted = [...shifts].sort(
+            (a, b) => dayjs(a.date).valueOf() - dayjs(b.date).valueOf(),
+          );
+
+          const totalHours = sorted.reduce((sum, s) => sum + getShiftHours(s), 0);
+
+          const content = (
+            <div style={{ width: 540 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+                <Typography.Text strong>{t('assignments.shifts', 'Смены')}</Typography.Text>
+                <Typography.Text type="secondary" style={{ marginLeft: 12, whiteSpace: 'nowrap' }}>
+                  {sorted.length} {t('common.days', 'дн.')} · {formatHours(totalHours)}
+                </Typography.Text>
+              </div>
+
+              <div style={{ maxHeight: 340, overflowY: 'auto', paddingRight: 16 }}>
+                {sorted.map((s: any) => {
+                  const d = dayjs(s.date);
+                  const start = s.startsAt ? dayjs(s.startsAt).format('HH:mm') : '—';
+                  const end = s.endsAt ? dayjs(s.endsAt).format('HH:mm') : '—';
+                  const h = getShiftHours(s);
+
+                  return (
+                    <div
+                      key={s.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: 16,
+                        padding: '6px 0',
+                        borderBottom: '1px solid rgba(0,0,0,0.06)',
+                      }}
+                    >
+                      <Typography.Text>
+                        {d.isValid() ? d.format('DD.MM.YYYY') : '—'} — {start}–{end}
+                      </Typography.Text>
+                      <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
+                        {formatHours(h)}
+                      </Typography.Text>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+
+          return (
+            <Popover
+              placement="rightTop"
+              content={content}
+              trigger="hover"
+              mouseEnterDelay={0.1}
+              overlayStyle={{ maxWidth: 600 }}
+            >
+              <Typography.Text style={{ cursor: 'pointer' }}>
+                {sorted.length} {t('common.days', 'дн.')} / {formatHours(totalHours)}
+              </Typography.Text>
+            </Popover>
+          );
+        },
+      },
+    ],
+    [t],
   );
 
   const pagination = usersQuery.data?.meta;
@@ -352,6 +555,18 @@ const UsersPage = () => {
           },
           showSizeChanger: true,
         }}
+        onRow={(record) => ({
+          onClick: (e) => {
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            if (target.closest('button') || target.closest('a')) return;
+
+            setSelectedUser({ id: record.id, email: record.email, fullName: record.fullName });
+            setAssPage(1);
+            setAssPageSize(10);
+            setAssignmentsModalOpen(true);
+          },
+        })}
       />
 
       <Modal
@@ -365,9 +580,7 @@ const UsersPage = () => {
         onOk={handleModalOk}
         okText={t('common.save')}
         cancelText={t('common.cancel')}
-        confirmLoading={
-          createMutation.isPending || updateMutation.isPending
-        }
+        confirmLoading={createMutation.isPending || updateMutation.isPending}
       >
         <Form form={form} layout="vertical">
           <Form.Item label={t('users.fullName')} name="fullName">
@@ -400,10 +613,7 @@ const UsersPage = () => {
                 <Input.Password />
               </Form.Item>
 
-              <Form.Item
-                name="sendPasswordOnCreate"
-                valuePropName="checked"
-              >
+              <Form.Item name="sendPasswordOnCreate" valuePropName="checked">
                 <Checkbox>{t('users.sendPassword')}</Checkbox>
               </Form.Item>
             </>
@@ -427,8 +637,57 @@ const UsersPage = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* ====== MODAL: назначения сотрудника ====== */}
+      <Modal
+        title={
+          selectedUser
+            ? `${t('users.fullName', 'Сотрудник')}: ${selectedUser.fullName ?? selectedUser.email}`
+            : t('users.fullName', 'Сотрудник')
+        }
+        open={assignmentsModalOpen}
+        onCancel={() => {
+          setAssignmentsModalOpen(false);
+          setSelectedUser(null);
+        }}
+        footer={null}
+        width={980}
+        destroyOnClose
+      >
+        {userAssignmentsQuery.isLoading ? (
+          <Flex justify="center" className="py-8">
+            <Spin />
+          </Flex>
+        ) : (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <Typography.Text type="secondary">
+                {t('assignments.listForUser', 'Назначения сотрудника')}
+              </Typography.Text>
+            </div>
+
+            <Table
+              rowKey="id"
+              columns={assignmentColumns}
+              dataSource={userAssignmentsQuery.data?.data ?? []}
+              loading={userAssignmentsQuery.isFetching}
+              pagination={{
+                current: assPage,
+                pageSize: assPageSize,
+                total: userAssignmentsQuery.data?.meta.total ?? 0,
+                onChange: (nextPage, nextSize) => {
+                  setAssPage(nextPage);
+                  setAssPageSize(nextSize ?? assPageSize);
+                },
+                showSizeChanger: true,
+              }}
+            />
+          </>
+        )}
+      </Modal>
     </div>
   );
 };
 
 export default UsersPage;
+//opt/armico/frontend/src/pages/Users.tsx

@@ -26,10 +26,35 @@ const AppLayout = () => {
   const { t } = useTranslation();
   const { logout, user, profile, isFetchingProfile } = useAuth();
 
+  const notificationsQuery = useQuery({
+    queryKey: ['notifications', 'me'],
+    queryFn: () => fetchNotifications(10),
+    refetchInterval: 60_000,
+  });
+
+  const notifications = notificationsQuery.data ?? [];
+
+  const isAdmin = user?.role === 'SUPER_ADMIN';
+  const isManager = user?.role === 'MANAGER';
+  const isWorker = user?.role === 'USER';
+  const isDevUser = user?.email === 'dev@armico.local';
+
+  // 👇 НЕ ПОКАЗЫВАЕМ EMAIL ДЛЯ SUPER_ADMIN (и вообще если нет fullName)
+  // Для админа без имени показываем "Администратор"
+  const displayName = useMemo(() => {
+    const fullName = (profile?.fullName ?? '').trim();
+    if (fullName) return fullName;
+
+    // если это супер-админ — не светим email
+    if (isAdmin) return t('layout.adminFallbackName', 'Администратор');
+
+    // для остальных — можно показывать email (если имени нет)
+    return (profile?.email ?? '').trim();
+  }, [profile?.fullName, profile?.email, isAdmin, t]);
+
+  // Навигация нужна только для админов/менеджеров/dev
   const navigationItems = useMemo(() => {
-    const isAdmin = user?.role === 'SUPER_ADMIN';
-    const isWorker = user?.role === 'USER';
-    const isDevUser = user?.email === 'dev@armico.local';
+    if (!(isAdmin || isManager || isDevUser)) return [];
 
     const items = [
       {
@@ -39,15 +64,7 @@ const AppLayout = () => {
       },
     ];
 
-    if (isWorker) {
-      items.push({
-        key: 'my-place',
-        path: '/my-place',
-        label: t('layout.mySchedule'),
-      });
-    }
-
-    if (isAdmin) {
+    if (isAdmin || isManager) {
       items.push(
         {
           key: 'assignments',
@@ -77,7 +94,6 @@ const AppLayout = () => {
       );
     }
 
-    // Dev-панель только для dev@armico.local
     if (isDevUser) {
       items.push({
         key: 'dev',
@@ -87,9 +103,10 @@ const AppLayout = () => {
     }
 
     return items;
-  }, [user?.role, user?.email, t]);
+  }, [isAdmin, isManager, isDevUser, t]);
 
   const selectedKey = useMemo(() => {
+    if (!navigationItems.length) return '';
     const match = navigationItems.find((item) =>
       item.path === '/dashboard'
         ? location.pathname === '/dashboard'
@@ -97,14 +114,6 @@ const AppLayout = () => {
     );
     return match?.key ?? navigationItems[0]?.key ?? '';
   }, [location.pathname, navigationItems]);
-
-  const notificationsQuery = useQuery({
-    queryKey: ['notifications', 'me'],
-    queryFn: () => fetchNotifications(10),
-    refetchInterval: 60_000,
-  });
-
-  const notifications = notificationsQuery.data ?? [];
 
   const notificationsOverlay = (
     <div className="w-96 max-h-80 bg-white rounded-lg shadow-lg px-4 py-3 overflow-y-auto">
@@ -124,24 +133,31 @@ const AppLayout = () => {
         notifications.map((item) => {
           const createdAt = dayjs(item.createdAt).format('DD.MM.YYYY HH:mm');
 
+          const payload: any = item.payload ?? {};
           const employeeName =
-            (item.payload?.userFullName as string | undefined) ??
-            (item.payload?.userEmail as string | undefined) ??
+            (payload.userFullName as string | undefined) ??
+            (payload.userEmail as string | undefined) ??
             '';
 
           const workplaceCode =
-            (item.payload?.workplaceCode as string | undefined) ?? '';
+            (payload.workplaceCode as string | undefined) ?? '';
           const workplaceName =
-            (item.payload?.workplaceName as string | undefined) ?? '';
+            (payload.workplaceName as string | undefined) ?? '';
 
           const workplaceLabel = [workplaceCode, workplaceName]
             .filter(Boolean)
             .join(' — ');
 
+          const adjustmentType =
+            (payload.adjustmentType as
+              | 'REQUESTED'
+              | 'APPROVED'
+              | 'REJECTED'
+              | undefined) ?? undefined;
+
           let title = '';
           let description: string | null = null;
 
-          // Базовые типы уведомлений по назначениям
           if (item.type === 'ASSIGNMENT_CREATED') {
             title = t(
               'notifications.assignmentCreatedShort',
@@ -157,30 +173,35 @@ const AppLayout = () => {
               'notifications.assignmentCancelledShort',
               'Назначение отменено',
             );
+          } else if (item.type === 'ASSIGNMENT_UPDATED' && adjustmentType) {
+            // Специальные заголовки для корректировок графика
+            if (adjustmentType === 'REQUESTED') {
+              title = t(
+                'notifications.scheduleCorrectionRequestedShort',
+                'Запрос на корректировку графика',
+              );
+            } else if (adjustmentType === 'APPROVED') {
+              title = t(
+                'notifications.scheduleCorrectionApprovedShort',
+                'Корректировка графика одобрена',
+              );
+            } else if (adjustmentType === 'REJECTED') {
+              title = t(
+                'notifications.scheduleCorrectionRejectedShort',
+                'Корректировка графика отклонена',
+              );
+            } else {
+              title = t(
+                'notifications.assignmentUpdatedShort',
+                'Назначение обновлено',
+              );
+            }
           } else if (item.type === 'ASSIGNMENT_UPDATED') {
             title = t(
               'notifications.assignmentUpdatedShort',
               'Назначение обновлено',
             );
-          }
-          // Заложка под будущие уведомления по корректировкам графика
-          else if (item.type === 'SCHEDULE_CORRECTION_REQUESTED') {
-            title = t(
-              'notifications.scheduleCorrectionRequestedShort',
-              'Запрос на корректировку графика',
-            );
-          } else if (item.type === 'SCHEDULE_CORRECTION_APPROVED') {
-            title = t(
-              'notifications.scheduleCorrectionApprovedShort',
-              'Корректировка графика одобрена',
-            );
-          } else if (item.type === 'SCHEDULE_CORRECTION_REJECTED') {
-            title = t(
-              'notifications.scheduleCorrectionRejectedShort',
-              'Корректировка графика отклонена',
-            );
           } else {
-            // Непонятный тип — просто текст по умолчанию
             title = t('notifications.generic', 'Уведомление');
           }
 
@@ -214,11 +235,60 @@ const AppLayout = () => {
     </div>
   );
 
+  // ===== ЛЕЙАУТ ДЛЯ РАБОТНИКА (USER): НИКАКОГО МЕНЮ, ТОЛЬКО ОДНА СТРАНИЦА =====
+  if (isWorker && !isAdmin && !isManager && !isDevUser) {
+    return (
+      <Layout className="min-h-screen">
+        <Header className="bg-white px-6 flex items-center justify-between shadow-sm">
+          <Space size="middle">
+            <Typography.Text className="font-medium">
+              {t('layout.welcome')}{' '}
+              {displayName}
+            </Typography.Text>
+            {isFetchingProfile && <Spin size="small" />}
+          </Space>
+          <Space size="large">
+            <Dropdown
+              trigger={['click']}
+              dropdownRender={() => notificationsOverlay}
+              placement="bottomRight"
+            >
+              <Badge
+                count={notifications.length}
+                overflowCount={99}
+                offset={[-4, 4]}
+              >
+                <Button
+                  type="text"
+                  shape="circle"
+                  icon={<BellOutlined />}
+                  aria-label="Notifications"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                />
+              </Badge>
+            </Dropdown>
+            <Button onClick={logout}>{t('layout.logout')}</Button>
+          </Space>
+        </Header>
+        <Content className="p-6 bg-gray-100 min-h-0">
+          <div className="bg-white rounded-lg shadow-sm p-6 min-h-[70vh]">
+            {isFetchingProfile && !profile ? <Skeleton active /> : <Outlet />}
+          </div>
+        </Content>
+      </Layout>
+    );
+  }
+
+  // ===== АДМИН / МЕНЕДЖЕР / DEV — С САЙДБАРОМ, КАК РАНЬШЕ =====
   return (
     <Layout className="min-h-screen">
       <Sider breakpoint="lg">
         <div className="text-white text-lg font-semibold px-4 py-3">
-          Armico
+          Grant Thornton
         </div>
         <Menu
           theme="dark"
@@ -243,7 +313,7 @@ const AppLayout = () => {
           <Space size="middle">
             <Typography.Text className="font-medium">
               {t('layout.welcome')}{' '}
-              {profile?.fullName ?? profile?.email ?? ''}
+              {displayName}
             </Typography.Text>
             {isFetchingProfile && <Spin size="small" />}
           </Space>

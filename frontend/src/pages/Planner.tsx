@@ -187,8 +187,9 @@ const PlannerPage = () => {
 
     try {
       const blob = await downloadPlannerExcel({
-        from: fromDate.toISOString(),
-        to: toDate.toISOString(),
+        // ⚙️ отправляем только дату без времени, чтобы не было сдвига по часовому поясу
+        from: fromDate.format('YYYY-MM-DD'),
+        to: toDate.format('YYYY-MM-DD'),
         mode: mode === 'byUsers' ? 'users' : 'workplaces',
         status: statusFilter,
       });
@@ -268,10 +269,7 @@ const PlannerPage = () => {
       {matrix && (
         <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
           {totalLabel}: <strong>{matrix.total}</strong>.{' '}
-          {t(
-            'planner.periodSummary',
-            'Период',
-          )}{' '}
+          {t('planner.periodSummary', 'Период')}{' '}
           <strong>{dayjs(matrix.from).format('DD.MM.YYYY')}</strong> —{' '}
           <strong>{dayjs(matrix.to).format('DD.MM.YYYY')}</strong>.
         </Typography.Paragraph>
@@ -486,6 +484,11 @@ const PlannerPage = () => {
                       </div>
                     );
 
+                    // 🎨 цвет слота из рабочего места
+                    const rawColor = slot.workplace?.color || undefined;
+                    const bgColor = rawColor || '#e6f7ff';
+                    const borderColor = rawColor || '#91d5ff';
+
                     return (
                       <Tooltip key={slot.id} title={tooltipTitle}>
                         <div
@@ -496,8 +499,8 @@ const PlannerPage = () => {
                             width,
                             height: ROW_HEIGHT - 6,
                             borderRadius: 6,
-                            background: '#e6f7ff',
-                            border: '1px solid #91d5ff',
+                            background: bgColor,
+                            border: `1px solid ${borderColor}`,
                             padding: '4px 6px',
                             boxSizing: 'border-box',
                             overflow: 'hidden',

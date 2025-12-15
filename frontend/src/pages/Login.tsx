@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Card, Form, Input, Button, message } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -7,17 +8,28 @@ import { useAuth } from '../context/AuthContext.js';
 const Login = () => {
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { login: authenticate } = useAuth();
+  const { login: authenticate, user } = useAuth();
 
   const { mutateAsync, isPending } = useMutation({
     mutationFn: authenticate,
   });
 
+  // 👉 как только user появился / поменялся — решаем, куда отправлять
+  useEffect(() => {
+    if (!user) return;
+
+    if (user.role === 'SUPER_ADMIN') {
+      navigate('/dashboard', { replace: true });
+    } else {
+      navigate('/my-place', { replace: true });
+    }
+  }, [user, navigate]);
+
   const onFinish = async (values: { email: string; password: string }) => {
     try {
       await mutateAsync(values);
       message.success(t('login.submit'));
-      navigate('/dashboard', { replace: true });
+      // редирект НЕ делаем здесь — его делает useEffect выше
     } catch (error) {
       message.error(t('common.error'));
     }

@@ -41,13 +41,28 @@ type ScheduleAdjustmentDecisionPayload = {
   managerComment?: string;
 };
 
+/**
+ * Описывает одну смену, которую сотрудник запросил в комментарии
+ * (мы будем по этому массиву полностью пересобирать график).
+ */
+type ParsedRequestedShift = {
+  date: Date; // дата (с учётом локального часового пояса организации)
+  startsAt: Date;
+  endsAt: Date;
+  kind: ShiftKind;
+};
+
 @Injectable()
 export class AssignmentsService {
+  // Локальный часовой пояс организации (Кыргызстан, UTC+6).
+  // Нужно, чтобы восстановить те же UTC-времена, которые даёт фронт при toISOString().
+  private readonly LOCAL_TZ_OFFSET_MINUTES = 6 * 60;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly email: EmailService,
-  private readonly smsService: SmsService,
+    private readonly smsService: SmsService,
   ) {}
 
   /**
@@ -583,7 +598,8 @@ export class AssignmentsService {
               startsAt: shift.startsAt,
               endsAt: shift.endsAt,
               kind:
-                shift.kind && ShiftKind[shift.kind as keyof typeof ShiftKind]
+                shift.kind &&
+                ShiftKind[shift.kind as keyof typeof ShiftKind]
                   ? shift.kind
                   : ShiftKind.DEFAULT,
             })),
@@ -961,11 +977,21 @@ export class AssignmentsService {
 
   /**
    * Нормализуем дату: поддерживаем как ISO, так и просто YYYY-MM-DD.
+   * Для "YYYY-MM-DD" считаем, что это локальная дата в UTC+6,
+   * и сохраняем такую же схему, как делает фронт через toISOString().
    */
   private parseDateOnly(dateStr: string): Date {
-    const iso =
-      /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? `${dateStr}T00:00:00.000Z` : dateStr;
-    const d = new Date(iso);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      const [y, m, d] = dateStr.split('-').map((v) => Number(v));
+      if (!y || !m || !d) {
+        throw new BadRequestException('Некорректная дата корректировки');
+      }
+      const offsetMs = this.LOCAL_TZ_OFFSET_MINUTES * 60 * 1000;
+      const utcMs = Date.UTC(y, m - 1, d, 0, 0, 0, 0) - offsetMs;
+      return new Date(utcMs);
+    }
+
+    const d = new Date(dateStr);
     if (Number.isNaN(d.getTime())) {
       throw new BadRequestException('Некорректная дата корректировки');
     }
@@ -973,11 +999,109 @@ export class AssignmentsService {
   }
 
   /**
-   * 📝 Пользователь подаёт запрос на корректировку по назначению.
+   * Склеиваем локальную дату (YYYY-MM-DD) и локальное время HH:mm
+   * в UTC-время по той же логике, что и фронт (UTC+6).
+   */
+  private buildUtcFromLocalDateAndTime(
+    dateIso: string,
+    timeStr: string,
+  ): Date {
+    const [y, m, d] = dateIso.split('-').map((v) => Number(v));
+    const [hh, mm] = timeStr.split(':').map((v) => Number(v));
+
+    if (!y || !m || !d || Number.isNaN(hh) || Number.isNaN(mm)) {
+      throw new BadRequestException(
+        'Некорректная дата/время корректировки',
+      );
+    }
+
+    const offsetMs = this.LOCAL_TZ_OFFSET_MINUTES * 60 * 1000;
+    const utcMs = Date.UTC(y, m - 1, d, hh, mm, 0, 0) - offsetMs;
+    return new Date(utcMs);
+  }
+
+  /**
+   * Парсим блок "Интервалы, которые сотрудник предлагает:"
+   * из комментария и превращаем в массив смен.
    *
-   * Пока что это просто запись в отдельную таблицу + нотификации.
-   * Автоматически сами смены мы НЕ правим (это можно будет добавить позже,
-   * когда утрясём логику статистики).
+   * Пример строки:
+   * 21.11.2025: 04:00 → 09:00 (Day off / больничный)
+   */
+  private parseRequestedScheduleFromComment(
+    comment?: string | null,
+  ): ParsedRequestedShift[] {
+    if (!comment) return [];
+
+    const marker = 'Интервалы, которые сотрудник предлагает:';
+    const idx = comment.indexOf(marker);
+    if (idx === -1) return [];
+
+    const lines = comment
+      .slice(idx + marker.length)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const re =
+      /^(\d{2}\.\d{2}\.\d{4}):\s+(\d{2}:\d{2})\s*→\s*(\d{2}:\d{2})(?:\s*\((.+)\))?$/;
+
+    const detectKind = (label?: string | null): ShiftKind => {
+      if (!label) return ShiftKind.DEFAULT;
+      const lower = label.toLowerCase();
+      if (lower.includes('офис')) return ShiftKind.OFFICE;
+      if (lower.includes('удал')) return ShiftKind.REMOTE;
+      if (lower.includes('day off') || lower.includes('больнич'))
+        return ShiftKind.DAY_OFF;
+      return ShiftKind.DEFAULT;
+    };
+
+    const result: ParsedRequestedShift[] = [];
+
+    for (const line of lines) {
+      const match = line.match(re);
+      if (!match) continue;
+
+      const [, dateStr, startStr, endStr, kindLabel] = match;
+
+      const [day, month, year] = dateStr.split('.').map((v) => Number(v));
+      if (!day || !month || !year) continue;
+
+      const [sh, sm] = startStr.split(':').map((v) => Number(v));
+      const [eh, em] = endStr.split(':').map((v) => Number(v));
+      if (
+        Number.isNaN(sh) ||
+        Number.isNaN(sm) ||
+        Number.isNaN(eh) ||
+        Number.isNaN(em)
+      ) {
+        continue;
+      }
+
+      // ISO-дата в формате YYYY-MM-DD, трактуем как локальную (UTC+6)
+      const yyyy = String(year).padStart(4, '0');
+      const mm = String(month).padStart(2, '0');
+      const dd = String(day).padStart(2, '0');
+      const dateIso = `${yyyy}-${mm}-${dd}`;
+
+      const date = this.parseDateOnly(dateIso);
+      const startsAt = this.buildUtcFromLocalDateAndTime(dateIso, startStr);
+      const endsAt = this.buildUtcFromLocalDateAndTime(dateIso, endStr);
+
+      const kind = detectKind(kindLabel);
+
+      result.push({
+        date,
+        startsAt,
+        endsAt,
+        kind,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * 📝 Пользователь подаёт запрос на корректировку по назначению.
    */
   async requestScheduleAdjustment(
     assignmentId: string,
@@ -1105,12 +1229,13 @@ export class AssignmentsService {
   /**
    * ✅ / ❌ Решение по запросу корректировки.
    *
-   * Сейчас:
    *  - меняем статус PENDING → APPROVED / REJECTED
    *  - сохраняем комментарий менеджера
+   *  - при APPROVED:
+   *      * если в комментарии есть блок "Интервалы, которые сотрудник предлагает:",
+   *        ПОЛНОСТЬЮ пересобираем смены по всему назначению под этот график
+   *      * иначе старое поведение: меняем kind/время только для указанной даты
    *  - шлём нотификации
-   *
-   * В будущем сюда можно добавить автопроставление DAY_OFF и т.п.
    */
   async decideScheduleAdjustment(
     adjustmentId: string,
@@ -1121,38 +1246,117 @@ export class AssignmentsService {
       throw new BadRequestException('Некорректный статус решения');
     }
 
-    const adjustment = await this.prisma.assignmentAdjustment.findUnique({
-      where: { id: adjustmentId },
-      include: {
-        assignment: {
-          include: {
-            workplace: { select: { id: true, orgId: true, code: true, name: true } },
-            user: { select: { id: true, orgId: true } },
+    const {
+      updatedAdjustment,
+      assignmentForNotify,
+    } = await this.prisma.$transaction(async (tx) => {
+      const adjustment = await tx.assignmentAdjustment.findUnique({
+        where: { id: adjustmentId },
+        include: {
+          assignment: {
+            include: {
+              workplace: {
+                select: { id: true, orgId: true, code: true, name: true },
+              },
+              user: { select: { id: true, orgId: true } },
+            },
+          },
+          user: {
+            select: { id: true, email: true, fullName: true },
           },
         },
-        user: {
-          select: { id: true, email: true, fullName: true },
-        },
-      },
+      });
+
+      if (!adjustment) {
+        throw new NotFoundException('Запрос корректировки не найден');
+      }
+
+      if (adjustment.status !== 'PENDING') {
+        throw new BadRequestException('По этому запросу уже принято решение');
+      }
+
+      // 1) обновляем сам запрос
+      const updated = await tx.assignmentAdjustment.update({
+        where: { id: adjustmentId },
+        data: {
+          status: decision,
+          managerComment: payload.managerComment ?? null,
+        } as any,
+      });
+
+      // 2) если APPROVED — применяем к сменам назначения
+      if (decision === 'APPROVED') {
+        const requestedShifts = this.parseRequestedScheduleFromComment(
+          adjustment.comment,
+        );
+
+        if (requestedShifts.length > 0) {
+          // Новый режим: полностью пересобираем смены для назначения
+          const assignmentId = adjustment.assignmentId;
+
+          // Удаляем все старые смены
+          await tx.assignmentShift.deleteMany({
+            where: { assignmentId },
+          });
+
+          // Создаём новые смены
+          await tx.assignmentShift.createMany({
+            data: requestedShifts.map((s) => ({
+              assignmentId,
+              date: s.date,
+              startsAt: s.startsAt,
+              endsAt: s.endsAt,
+              kind: s.kind,
+            })),
+          });
+
+          // Обновляем глобальный интервал назначения по min/max времени
+          const minStart = requestedShifts.reduce(
+            (min, s) => (s.startsAt < min ? s.startsAt : min),
+            requestedShifts[0].startsAt,
+          );
+          const maxEnd = requestedShifts.reduce(
+            (max, s) => (s.endsAt > max ? s.endsAt : max),
+            requestedShifts[0].endsAt,
+          );
+
+          await tx.assignment.update({
+            where: { id: assignmentId },
+            data: {
+              startsAt: minStart,
+              endsAt: maxEnd,
+            },
+          });
+        } else {
+          // Старый fallback: меняем только вид/время смен на указанную дату
+          const updateData: Prisma.AssignmentShiftUpdateManyMutationInput = {
+            kind: adjustment.kind ?? ShiftKind.DAY_OFF,
+          };
+
+          if (adjustment.startsAt) {
+            updateData.startsAt = adjustment.startsAt;
+          }
+          if (adjustment.endsAt) {
+            updateData.endsAt = adjustment.endsAt;
+          }
+
+          await tx.assignmentShift.updateMany({
+            where: {
+              assignmentId: adjustment.assignmentId,
+              date: adjustment.date,
+            },
+            data: updateData,
+          });
+        }
+      }
+
+      return {
+        updatedAdjustment: updated,
+        assignmentForNotify: adjustment.assignment,
+      };
     });
 
-    if (!adjustment) {
-      throw new NotFoundException('Запрос корректировки не найден');
-    }
-
-    if (adjustment.status !== 'PENDING') {
-      throw new BadRequestException('По этому запросу уже принято решение');
-    }
-
-    const updated = await this.prisma.assignmentAdjustment.update({
-      where: { id: adjustmentId },
-      data: {
-        status: decision,
-        managerComment: payload.managerComment ?? null,
-      } as any,
-    });
-
-    const assignment = adjustment.assignment;
+    const assignment = assignmentForNotify;
     const orgId =
       assignment?.workplace?.orgId ?? assignment?.user?.orgId ?? null;
 
@@ -1169,7 +1373,7 @@ export class AssignmentsService {
           assignmentId: assignment.id,
           userId: assignment.userId,
           workplaceId: assignment.workplaceId,
-          adjustmentId: adjustment.id,
+          adjustmentId: updatedAdjustment.id,
           adjustmentType:
             decision === 'APPROVED'
               ? 'APPROVED'
@@ -1178,6 +1382,6 @@ export class AssignmentsService {
       );
     }
 
-    return updated;
+    return updatedAdjustment;
   }
 }

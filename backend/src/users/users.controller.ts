@@ -72,7 +72,6 @@ export class UsersController {
 
   /**
    * Удаление пользователя.
-   * Полное удаление возможно только для обычных (USER) ролей.
    */
   @Delete(':id')
   @Roles(UserRole.SUPER_ADMIN)
@@ -81,12 +80,15 @@ export class UsersController {
   }
 
   /**
-   * Отправка пользователю сгенерированного или установленного пароля.
-   * Если шлюз не настроен — вернёт ошибку.
+   * Отправка пароля пользователю.
+   *
+   * ЛОГИКА:
+   * - если пароль не менялся → НЕ отправляем
+   * - если пароль менялся → отправляем
    */
   @Post(':id/send-password')
   @Roles(UserRole.SUPER_ADMIN)
-  async sendPassword(@Param('id') id: string) {
+  sendPassword(@Param('id') id: string) {
     return this.usersService.sendPassword(id);
   }
 }

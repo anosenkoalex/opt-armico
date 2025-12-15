@@ -6,7 +6,6 @@ import {
   Result,
   Select,
   Table,
-  Tabs,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -14,562 +13,440 @@ import { useQuery } from '@tanstack/react-query';
 import dayjs, { Dayjs } from 'dayjs';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Assignment,
+import { fetchUsers, fetchStatistics } from '../api/client.js';
+import type {
   AssignmentStatus,
-  PaginatedResponse,
   User,
-  Workplace,
-  fetchAssignments,
-  fetchUsers,
-  fetchWorkplaces,
+  ShiftKind,
+  StatisticsRow,
+  StatisticsResponse,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
 const { RangePicker } = DatePicker;
-
-type AssignmentsQueryResult =
-  | PaginatedResponse<Assignment>
-  | {
-      items: Assignment[];
-      total: number;
-      page: number;
-      pageSize: number;
-    };
 
 type FiltersState = {
   userId?: string;
   workplaceId?: string;
   status?: AssignmentStatus;
   range?: [Dayjs, Dayjs] | null;
+  kinds?: ShiftKind[];
 };
 
 const statusOptions: AssignmentStatus[] = ['ACTIVE', 'ARCHIVED'];
+
+// Русские названия типов смен
+const shiftKindLabels: Record<ShiftKind, string> = {
+  DEFAULT: 'Обычная смена',
+  OFFICE: 'Офис',
+  REMOTE: 'Удалёнка',
+  DAY_OFF: 'Выходной / Day off',
+};
+
+const shiftKindSelectOptions = (Object.keys(shiftKindLabels) as ShiftKind[]).map(
+  (k) => ({
+    value: k,
+    label: shiftKindLabels[k],
+  }),
+);
+
+type EmployeeRow = {
+  userId: string;
+  name: string;
+  assignmentsSummary: string;
+  workingDays: number;
+  totalHours: number;
+};
 
 const StatisticsPage = () => {
   const { t } = useTranslation();
   const { user } = useAuth();
 
-  const isAdmin = user?.role === 'SUPER_ADMIN';
+  const canViewStatistics =
+    user?.role === 'SUPER_ADMIN' || user?.role === 'MANAGER';
 
-  const [activeTab, setActiveTab] = useState<'byUsers' | 'byWorkplaces'>(
-    'byUsers',
-  );
-  const [filters, setFilters] = useState<FiltersState>({});
+  const defaultRange: [Dayjs, Dayjs] = [
+    dayjs().startOf('month'),
+    dayjs().endOf('month'),
+  ];
 
-  // Модалка с деталями по сотруднику
-  const [userDetails, setUserDetails] = useState<{
-    visible: boolean;
-    userId: string | null;
-    name: string;
-  }>({
-    visible: false,
-    userId: null,
-    name: '',
+  const [filters, setFilters] = useState<FiltersState>({
+    range: defaultRange,
   });
 
-  // Модалка с деталями по рабочему месту
-  const [workplaceDetails, setWorkplaceDetails] = useState<{
-    visible: boolean;
-    workplaceId: string | null;
-    label: string;
-  }>({
-    visible: false,
-    workplaceId: null,
-    label: '',
-  });
+  const [detailsUserId, setDetailsUserId] = useState<string | null>(null);
+  const [detailsUserName, setDetailsUserName] = useState<string>('');
 
-  if (!isAdmin) {
+  if (!canViewStatistics) {
     return <Result status="403" title={t('admin.accessDenied')} />;
   }
 
-  // Пользователи и рабочие места для фильтров
+  /* ---------- справочник пользователей ---------- */
+
   const usersQuery = useQuery<User[]>({
     queryKey: ['users', 'all-for-statistics'],
     queryFn: async () => {
-      const res = await fetchUsers({ page: 1, pageSize: 500 });
+      const res = await fetchUsers({ page: 1, pageSize: 100 });
       return res.data;
     },
-    enabled: isAdmin,
+    enabled: canViewStatistics,
   });
 
-  const workplacesQuery = useQuery<PaginatedResponse<Workplace>>({
-    queryKey: ['workplaces', 'all-for-statistics'],
-    queryFn: () =>
-      fetchWorkplaces({
-        page: 1,
-        pageSize: 500,
-      }),
-    enabled: isAdmin,
-  });
+  const effectiveFrom = filters.range?.[0] ?? defaultRange[0];
+  const effectiveTo = filters.range?.[1] ?? defaultRange[1];
 
-  // Подтягиваем все назначения за период/фильтры (первая страница, но большой pageSize)
-  const assignmentsQuery = useQuery<AssignmentsQueryResult>({
+  /* ---------- основная статистика ---------- */
+
+  const statisticsQuery = useQuery<StatisticsResponse>({
     queryKey: [
-      'statistics-assignments',
+      'statistics',
       {
-        tab: activeTab,
-        ...filters,
+        userId: filters.userId,
+        workplaceId: filters.workplaceId,
+        from: effectiveFrom.format('YYYY-MM-DD'),
+        to: effectiveTo.format('YYYY-MM-DD'),
       },
     ],
     queryFn: () =>
-      fetchAssignments({
+      fetchStatistics({
+        from: effectiveFrom.format('YYYY-MM-DD'),
+        to: effectiveTo.format('YYYY-MM-DD'),
         userId: filters.userId,
         workplaceId: filters.workplaceId,
-        status: filters.status,
-        from: filters.range?.[0]?.toISOString(),
-        to: filters.range?.[1]?.toISOString(),
-        page: 1,
-        pageSize: 1000,
       }),
     keepPreviousData: true,
-    enabled: isAdmin,
+    enabled: canViewStatistics,
   });
 
-  // Унифицированно достаём массив назначений
-  const assignments: Assignment[] = useMemo(() => {
-    const raw = assignmentsQuery.data as any;
-    if (!raw) return [];
-    return raw.data ?? raw.items ?? [];
-  }, [assignmentsQuery.data]);
+  const statistics = statisticsQuery.data;
+  const allRows: StatisticsRow[] = statistics?.rows ?? [];
 
-  // --- Агрегация по сотрудникам ---
-  const byUsersData = useMemo(() => {
-    const map: Record<
+  /* ---------- опции рабочих мест для фильтра ---------- */
+
+  const workplaceOptions = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const row of allRows) {
+      if (!row.workplaceId) continue;
+      if (!map[row.workplaceId]) {
+        map[row.workplaceId] = row.workplaceName ?? row.workplaceId;
+      }
+    }
+    return Object.entries(map).map(([id, name]) => ({
+      value: id,
+      label: name,
+    }));
+  }, [allRows]);
+
+  /* ---------- фильтры по статусу и типу смены (на фронте) ---------- */
+
+  const filteredRows: StatisticsRow[] = useMemo(() => {
+    return allRows.filter((row) => {
+      if (filters.status && row.assignmentStatus !== filters.status) {
+        return false;
+      }
+      if (
+        filters.kinds &&
+        filters.kinds.length > 0 &&
+        !filters.kinds.includes(row.shiftKind as ShiftKind)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [allRows, filters.status, filters.kinds]);
+
+  /* ---------- агрегат по сотрудникам ---------- */
+
+  const employeesData: EmployeeRow[] = useMemo(() => {
+    const byUser: Record<
       string,
       {
-        userId: string;
         name: string;
-        email: string;
-        workplaces: Set<string>;
-        assignmentsCount: number;
-        totalDays: number;
+        assignments: Record<
+          string,
+          { workplaceName: string; minDate: string; maxDate: string }
+        >;
+        daysSet: Set<string>;
+        totalHours: number;
       }
     > = {};
 
-    const rangeFrom = filters.range?.[0];
-    const rangeTo = filters.range?.[1];
+    for (const row of filteredRows) {
+      const uid = row.userId;
+      if (!uid) continue;
 
-    for (const a of assignments) {
-      if (!a.user) continue;
+      // дата для отображения – считаем от startsAt, а не от row.date,
+      // чтобы не ловить сдвиги и странные значения в "date"
+      const displayDate = dayjs(row.startsAt ?? row.date).format('YYYY-MM-DD');
 
-      const key = a.user.id;
-      if (!map[key]) {
-        map[key] = {
-          userId: key,
-          name: a.user.fullName ?? a.user.email,
-          email: a.user.email,
-          workplaces: new Set<string>(),
-          assignmentsCount: 0,
-          totalDays: 0,
+      if (!byUser[uid]) {
+        byUser[uid] = {
+          name: row.userName ?? row.userId,
+          assignments: {},
+          daysSet: new Set<string>(),
+          totalHours: 0,
         };
       }
 
-      map[key].assignmentsCount += 1;
+      const userAgg = byUser[uid];
 
-      if (a.workplace) {
-        const label = a.workplace.code
-          ? `${a.workplace.code} — ${a.workplace.name}`
-          : a.workplace.name ?? '';
-        if (label) {
-          map[key].workplaces.add(label);
-        }
-      }
+      // дни
+      userAgg.daysSet.add(displayDate);
 
-      // считаем дни в пределах выбранного диапазона
-      let start = dayjs(a.startsAt);
-      let end = a.endsAt ? dayjs(a.endsAt) : dayjs();
+      // часы
+      userAgg.totalHours += row.hours;
 
-      if (rangeFrom && start.isBefore(rangeFrom)) {
-        start = rangeFrom;
-      }
-      if (rangeTo && end.isAfter(rangeTo)) {
-        end = rangeTo;
-      }
+      // группируем по рабочему месту: 111 20.11–28.11
+      const key = row.workplaceId;
+      const workplaceName = row.workplaceName ?? 'Без названия';
 
-      if (end.isBefore(start)) continue;
-
-      const days =
-        end.endOf('day').diff(start.startOf('day'), 'day') + 1; // минимум 1 день
-      map[key].totalDays += days;
-    }
-
-    return Object.values(map).map((row) => ({
-      ...row,
-      workplaces: Array.from(row.workplaces).join(', '),
-    }));
-  }, [assignments, filters.range]);
-
-  // --- Агрегация по рабочим местам ---
-  const byWorkplacesData = useMemo(() => {
-    const map: Record<
-      string,
-      {
-        workplaceId: string;
-        label: string;
-        employees: Set<string>;
-        assignmentsCount: number;
-        totalDays: number;
-      }
-    > = {};
-
-    const rangeFrom = filters.range?.[0];
-    const rangeTo = filters.range?.[1];
-
-    for (const a of assignments) {
-      if (!a.workplace) continue;
-
-      const key = a.workplace.id;
-      const label = a.workplace.code
-        ? `${a.workplace.code} — ${a.workplace.name}`
-        : a.workplace.name ?? '';
-
-      if (!map[key]) {
-        map[key] = {
-          workplaceId: key,
-          label,
-          employees: new Set<string>(),
-          assignmentsCount: 0,
-          totalDays: 0,
+      if (!userAgg.assignments[key]) {
+        userAgg.assignments[key] = {
+          workplaceName,
+          minDate: displayDate,
+          maxDate: displayDate,
         };
+      } else {
+        const a = userAgg.assignments[key];
+        if (dayjs(displayDate).isBefore(a.minDate)) a.minDate = displayDate;
+        if (dayjs(displayDate).isAfter(a.maxDate)) a.maxDate = displayDate;
       }
-
-      map[key].assignmentsCount += 1;
-
-      if (a.user) {
-        map[key].employees.add(a.user.id);
-      }
-
-      let start = dayjs(a.startsAt);
-      let end = a.endsAt ? dayjs(a.endsAt) : dayjs();
-
-      if (rangeFrom && start.isBefore(rangeFrom)) {
-        start = rangeFrom;
-      }
-      if (rangeTo && end.isAfter(rangeTo)) {
-        end = rangeTo;
-      }
-
-      if (end.isBefore(start)) continue;
-
-      const days =
-        end.endOf('day').diff(start.startOf('day'), 'day') + 1;
-      map[key].totalDays += days;
     }
 
-    return Object.values(map).map((row) => ({
-      ...row,
-      employeesCount: row.employees.size,
-    }));
-  }, [assignments, filters.range]);
+    return Object.entries(byUser).map(([userId, agg]) => {
+      const assignmentsSummary = Object.values(agg.assignments)
+        .map((a) => {
+          const from = dayjs(a.minDate).format('DD.MM.YYYY');
+          const to = dayjs(a.maxDate).format('DD.MM.YYYY');
+          return `${a.workplaceName} ${from}–${to}`;
+        })
+        .join('; ');
 
-  const userColumns: ColumnsType<{
-    userId: string;
-    name: string;
-    email: string;
-    workplaces: string;
-    assignmentsCount: number;
-    totalDays: number;
-  }> = [
+      return {
+        userId,
+        name: agg.name,
+        assignmentsSummary,
+        workingDays: agg.daysSet.size,
+        totalHours: Number(agg.totalHours.toFixed(2)),
+      };
+    });
+  }, [filteredRows]);
+
+  /* ---------- данные для модалки по сотруднику ---------- */
+
+  const detailsRows = useMemo(() => {
+    if (!detailsUserId) return [];
+
+    const rows = filteredRows.filter((r) => r.userId === detailsUserId);
+
+    // сначала активные, потом архив
+    const statusOrder = (s: AssignmentStatus) => (s === 'ACTIVE' ? 0 : 1);
+
+    return rows.slice().sort((a, b) => {
+      // 1) по статусу (ACTIVE сверху)
+      const so =
+        statusOrder(a.assignmentStatus) - statusOrder(b.assignmentStatus);
+      if (so !== 0) return so;
+
+      // 2) по дате (раньше — выше)
+      const da = dayjs(a.startsAt ?? a.date);
+      const db = dayjs(b.startsAt ?? b.date);
+      if (da.isBefore(db)) return -1;
+      if (da.isAfter(db)) return 1;
+
+      // 3) по времени внутри дня
+      return dayjs(a.startsAt).diff(dayjs(b.startsAt));
+    });
+  }, [filteredRows, detailsUserId]);
+
+  const isLoading = statisticsQuery.isLoading || usersQuery.isLoading;
+
+  /* ---------- колонки ---------- */
+
+  const employeesColumns: ColumnsType<EmployeeRow> = [
     {
-      title: t('statistics.byUsers.employee'),
+      title: 'Сотрудник',
       dataIndex: 'name',
       key: 'name',
+      render: (value: string, record) => (
+        <a
+          onClick={() => {
+            setDetailsUserId(record.userId);
+            setDetailsUserName(record.name);
+          }}
+        >
+          {value}
+        </a>
+      ),
     },
     {
-      title: t('statistics.byUsers.workplaces'),
-      dataIndex: 'workplaces',
-      key: 'workplaces',
+      title: 'Назначения',
+      dataIndex: 'assignmentsSummary',
+      key: 'assignmentsSummary',
       ellipsis: true,
     },
     {
-      title: t('statistics.byUsers.assignmentsCount'),
-      dataIndex: 'assignmentsCount',
-      key: 'assignmentsCount',
+      title: 'Рабочих дней',
+      dataIndex: 'workingDays',
+      key: 'workingDays',
     },
     {
-      title: t('statistics.byUsers.totalDays'),
-      dataIndex: 'totalDays',
-      key: 'totalDays',
-    },
-  ];
-
-  const workplaceColumns: ColumnsType<{
-    workplaceId: string;
-    label: string;
-    employeesCount: number;
-    assignmentsCount: number;
-    totalDays: number;
-  }> = [
-    {
-      title: t('statistics.byWorkplaces.workplace'),
-      dataIndex: 'label',
-      key: 'label',
-    },
-    {
-      title: t('statistics.byWorkplaces.employeesCount'),
-      dataIndex: 'employeesCount',
-      key: 'employeesCount',
-    },
-    {
-      title: t('statistics.byWorkplaces.assignmentsCount'),
-      dataIndex: 'assignmentsCount',
-      key: 'assignmentsCount',
-    },
-    {
-      title: t('statistics.byWorkplaces.totalDays'),
-      dataIndex: 'totalDays',
-      key: 'totalDays',
+      title: 'Количество часов',
+      dataIndex: 'totalHours',
+      key: 'totalHours',
+      render: (value: number) => value.toFixed(2),
     },
   ];
 
-  const isLoading =
-    assignmentsQuery.isLoading ||
-    usersQuery.isLoading ||
-    workplacesQuery.isLoading;
-
-  // --- Детали: список назначений по выбранному сотруднику / месту ---
-
-  const userDetailAssignments = useMemo(
-    () =>
-      userDetails.userId
-        ? assignments.filter((a) => a.userId === userDetails.userId)
-        : [],
-    [assignments, userDetails.userId],
-  );
-
-  const workplaceDetailAssignments = useMemo(
-    () =>
-      workplaceDetails.workplaceId
-        ? assignments.filter(
-            (a) => a.workplaceId === workplaceDetails.workplaceId,
-          )
-        : [],
-    [assignments, workplaceDetails.workplaceId],
-  );
-
-  const detailColumns: ColumnsType<Assignment> = [
+  const detailColumns: ColumnsType<StatisticsRow> = [
     {
-      title: t('assignments.user'),
-      dataIndex: ['user', 'email'],
-      key: 'user',
+      title: 'Дата',
+      dataIndex: 'date',
+      key: 'date',
       render: (_value, record) =>
-        record.user?.fullName ?? record.user?.email ?? '',
+        dayjs(record.startsAt ?? record.date).format('DD.MM.YYYY'),
     },
     {
-      title: t('assignments.workplace'),
-      dataIndex: ['workplace', 'name'],
-      key: 'workplace',
-      render: (_value, record) =>
-        record.workplace
-          ? record.workplace.code
-            ? `${record.workplace.code} — ${record.workplace.name}`
-            : record.workplace.name
-          : '',
+      title: 'Рабочее место',
+      dataIndex: 'workplaceName',
+      key: 'workplaceName',
+      render: (value: string | null) => value ?? '',
     },
     {
-      title: t('assignments.timeframe'),
-      dataIndex: 'startsAt',
-      key: 'timeframe',
-      render: (_value, record) =>
-        `${dayjs(record.startsAt).format('DD.MM.YYYY')} → ${
-          record.endsAt
-            ? dayjs(record.endsAt).format('DD.MM.YYYY')
-            : t('dashboard.openEnded')
-        }`,
+      title: 'Тип смены',
+      dataIndex: 'shiftKind',
+      key: 'shiftKind',
+      render: (kind: ShiftKind) => shiftKindLabels[kind] ?? kind,
     },
     {
-      title: t('assignments.status.title'),
-      dataIndex: 'status',
-      key: 'status',
+      title: 'Время',
+      key: 'time',
+      render: (_value, record) =>
+        `${dayjs(record.startsAt).format('HH:mm')} → ${dayjs(
+          record.endsAt ?? record.startsAt,
+        ).format('HH:mm')}`,
+    },
+    {
+      title: 'Статус назначения',
+      dataIndex: 'assignmentStatus',
+      key: 'assignmentStatus',
       render: (value: AssignmentStatus) =>
-        value === 'ACTIVE'
-          ? t('assignments.status.active')
-          : t('assignments.status.archived'),
+        value === 'ACTIVE' ? 'Активно' : 'В архиве',
+    },
+    {
+      title: 'Часы',
+      dataIndex: 'hours',
+      key: 'hours',
+      render: (value: number) => value.toFixed(2),
     },
   ];
 
   return (
-    <Card title={t('statistics.title')}>
+    <Card title="Статистика назначений">
+      {/* Фильтры */}
       <Form
         layout="inline"
         className="mb-4"
+        initialValues={{ range: defaultRange }}
         onValuesChange={(_changed, allValues) => {
           setFilters({
             userId: allValues.userId,
             workplaceId: allValues.workplaceId,
             status: allValues.status,
             range: allValues.range,
+            kinds: allValues.kinds,
           });
         }}
       >
-        <Form.Item name="userId" label={t('statistics.filters.user')}>
+        <Form.Item name="userId" label="Сотрудник">
           <Select
             allowClear
             showSearch
             options={
               usersQuery.data?.map((u) => ({
                 value: u.id,
-                label: `${u.fullName ?? u.email} (${u.email})`,
+                label: `${u.fullName ?? u.email}`,
               })) ?? []
             }
-            placeholder={t('statistics.filters.user')}
+            placeholder="Сотрудник"
             optionFilterProp="label"
             style={{ width: 260 }}
           />
         </Form.Item>
 
-        <Form.Item
-          name="workplaceId"
-          label={t('statistics.filters.workplace')}
-        >
+        <Form.Item name="workplaceId" label="Рабочее место">
           <Select
             allowClear
             showSearch
-            options={
-              workplacesQuery.data?.data.map((w) => ({
-                value: w.id,
-                label: `${w.code} — ${w.name}`,
-              })) ?? []
-            }
-            placeholder={t('statistics.filters.workplace')}
+            options={workplaceOptions}
+            placeholder="Рабочее место"
             optionFilterProp="label"
-            style={{ width: 280 }}
+            style={{ width: 260 }}
           />
         </Form.Item>
 
-        <Form.Item name="status" label={t('statistics.filters.status')}>
+        <Form.Item name="status" label="Статус">
           <Select
             allowClear
-            style={{ width: 200 }}
+            style={{ width: 180 }}
             options={statusOptions.map((value) => ({
               value,
-              label:
-                value === 'ACTIVE'
-                  ? t('assignments.status.active')
-                  : t('assignments.status.archived'),
+              label: value === 'ACTIVE' ? 'Активно' : 'В архиве',
             }))}
+            placeholder="Любой"
           />
         </Form.Item>
 
-        <Form.Item name="range" label={t('statistics.filters.period')}>
+        <Form.Item name="range" label="Период">
           <RangePicker />
+        </Form.Item>
+
+        <Form.Item name="kinds" label="Тип смены">
+          <Select
+            mode="multiple"
+            allowClear
+            style={{ minWidth: 220 }}
+            options={shiftKindSelectOptions}
+            placeholder="Выберите тип смены"
+          />
         </Form.Item>
       </Form>
 
-      <Tabs
-        activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as 'byUsers' | 'byWorkplaces')}
-        items={[
-          {
-            key: 'byUsers',
-            label: t('statistics.tabByUsers'),
-            children: (
-              <Table
-                rowKey="userId"
-                dataSource={byUsersData}
-                columns={userColumns}
-                loading={isLoading}
-                locale={{
-                  emptyText: t('statistics.noData'),
-                }}
-                onRow={(record) => ({
-                  onClick: () =>
-                    setUserDetails({
-                      visible: true,
-                      userId: record.userId,
-                      name: record.name,
-                    }),
-                })}
-              />
-            ),
-          },
-          {
-            key: 'byWorkplaces',
-            label: t('statistics.tabByWorkplaces'),
-            children: (
-              <Table
-                rowKey="workplaceId"
-                dataSource={byWorkplacesData}
-                columns={workplaceColumns}
-                loading={isLoading}
-                locale={{
-                  emptyText: t('statistics.noData'),
-                }}
-                onRow={(record) => ({
-                  onClick: () =>
-                    setWorkplaceDetails({
-                      visible: true,
-                      workplaceId: record.workplaceId,
-                      label: record.label,
-                    }),
-                })}
-              />
-            ),
-          },
-        ]}
+      {/* Список сотрудников */}
+      <Table
+        rowKey="userId"
+        dataSource={employeesData}
+        columns={employeesColumns}
+        loading={isLoading}
+        locale={{
+          emptyText: 'Нет данных за выбранный период',
+        }}
       />
 
-      {/* Детали по сотруднику */}
+      {/* Детализация по сотруднику */}
       <Modal
-        open={userDetails.visible}
+        open={!!detailsUserId}
         title={
-          userDetails.name
-            ? t('statistics.details.userTitle', {
-                name: userDetails.name,
-              })
-            : t('statistics.details.userTitlePlain')
+          detailsUserName
+            ? `Детализация по сотруднику: ${detailsUserName}`
+            : 'Детализация по сотруднику'
         }
         footer={null}
-        onCancel={() =>
-          setUserDetails({ visible: false, userId: null, name: '' })
-        }
-        width={900}
+        width={1000}
+        onCancel={() => {
+          setDetailsUserId(null);
+          setDetailsUserName('');
+        }}
       >
-        {userDetailAssignments.length === 0 ? (
+        {detailsRows.length === 0 ? (
           <Typography.Text type="secondary">
-            {t('statistics.noDetails')}
+            Нет данных по выбранному сотруднику за этот период.
           </Typography.Text>
         ) : (
           <Table
-            rowKey="id"
+            rowKey="shiftId"
             size="small"
-            dataSource={userDetailAssignments}
-            columns={detailColumns}
-            pagination={false}
-          />
-        )}
-      </Modal>
-
-      {/* Детали по рабочему месту */}
-      <Modal
-        open={workplaceDetails.visible}
-        title={
-          workplaceDetails.label
-            ? t('statistics.details.workplaceTitle', {
-                workplace: workplaceDetails.label,
-              })
-            : t('statistics.details.workplaceTitlePlain')
-        }
-        footer={null}
-        onCancel={() =>
-          setWorkplaceDetails({
-            visible: false,
-            workplaceId: null,
-            label: '',
-          })
-        }
-        width={900}
-      >
-        {workplaceDetailAssignments.length === 0 ? (
-          <Typography.Text type="secondary">
-            {t('statistics.noDetails')}
-          </Typography.Text>
-        ) : (
-          <Table
-            rowKey="id"
-            size="small"
-            dataSource={workplaceDetailAssignments}
+            dataSource={detailsRows}
             columns={detailColumns}
             pagination={false}
           />

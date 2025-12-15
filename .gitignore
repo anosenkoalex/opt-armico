@@ -7,3 +7,20 @@ build
 coverage
 .turbo
 .DS_Store
+# --- trash / accidental files ---
+=
+CACHED
+[backend
+[backend]
+[frontend
+[frontend]
+exporting
+naming
+transferring
+writing
+
+# local frontend
+frontend/.htaccess
+
+# node
+node_modules

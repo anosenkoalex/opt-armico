@@ -11,6 +11,8 @@ import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import * as bcrypt from 'bcryptjs';
 import { ListUsersDto } from './dto/list-users.dto.js';
+import { EmailService } from '../notifications/email.service.js';
+import { ConfigService } from '@nestjs/config';
 
 type SelectedUser = {
   id: string;
@@ -21,6 +23,7 @@ type SelectedUser = {
   role: UserRole;
   phone: string | null;
   createdAt: Date;
+  updatedAt: Date;
   org: { id: string; name: string; slug: string } | null;
 };
 
@@ -35,7 +38,11 @@ const DEFAULT_ORG_SLUG = 'armico';
 
 @Injectable()
 export class UsersService implements OnModuleInit {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     let org = await this.prisma.org.findUnique({
@@ -69,13 +76,16 @@ export class UsersService implements OnModuleInit {
     }
   }
 
-  // 🔑 Генератор случайного пароля
+  // ===== PASSWORD UTILS =====
   private generatePassword(length = 10): string {
     const chars =
       'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    return Array.from({ length }, () =>
+      chars[Math.floor(Math.random() * chars.length)],
+    ).join('');
   }
 
+  // ===== ORG HELPERS =====
   private async ensureOrg(orgId?: string | null) {
     if (!orgId) return null;
     const org = await this.prisma.org.findUnique({ where: { id: orgId } });
@@ -84,22 +94,33 @@ export class UsersService implements OnModuleInit {
   }
 
   private async getDefaultOrg() {
-    const org = await this.prisma.org.findFirst({ orderBy: { createdAt: 'asc' } });
+    const org = await this.prisma.org.findFirst({
+      orderBy: { createdAt: 'asc' },
+    });
     if (!org) throw new NotFoundException('Default organization not found');
     return org;
   }
 
-  async create(data: CreateUserDto) {
+  // ===== CREATE USER =====
+  async create(data: CreateUserDto & { sendPassword?: boolean }) {
     const email = data.email.trim();
+
     const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) throw new ConflictException('Пользователь с таким e-mail уже существует');
+    if (existing) {
+      throw new ConflictException('Пользователь с таким e-mail уже существует');
+    }
 
     let orgId =
       (data as CreateUserDto & { orgId?: string | null }).orgId ?? null;
-    orgId = orgId ? (await this.ensureOrg(orgId))?.id ?? null : (await this.getDefaultOrg()).id;
+
+    orgId = orgId
+      ? (await this.ensureOrg(orgId))?.id ?? null
+      : (await this.getDefaultOrg()).id;
 
     const rawPassword = data.password || this.generatePassword();
     const passwordHash = await bcrypt.hash(rawPassword, 10);
+
+    const sendPassword = Boolean(data.sendPassword);
 
     const created = await this.prisma.user.create({
       data: {
@@ -111,14 +132,91 @@ export class UsersService implements OnModuleInit {
         position: data.position?.trim() || null,
         phone: data.phone?.trim() || null,
         isSystemUser: false,
+
+        passwordWasSent: sendPassword,
+        createdWithAutoSend: sendPassword,
+        lastPasswordEmailAt: sendPassword ? new Date() : null,
+        passwordUpdatedAt: null,
       },
       select: this.baseSelect(),
     });
 
+    if (sendPassword) {
+      const appUrl =
+        this.configService.get<string>('APP_URL') ??
+        'https://grant-thornton.online';
+
+      await this.emailService.sendHtmlEmail(
+        email,
+        'Доступ к CRM',
+        `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
+          <h2>Добро пожаловать в CRM</h2>
+          <p><b>Логин:</b> ${email}<br/>
+          <b>Пароль:</b> ${rawPassword}</p>
+          <a href="${appUrl.replace(/\/$/, '')}/login">Войти</a>
+        </div>
+        `,
+      );
+    }
+
     return { ...this.presentUser(created), rawPassword };
   }
 
-  // 📋 Пагинация + фильтрация
+  // ===== SEND PASSWORD =====
+  async sendPassword(id: string): Promise<SendPasswordResult> {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Пользователь не найден');
+
+    // 🔴 FIX: строгое условие «уже актуален»
+    if (
+      user.passwordWasSent &&
+      user.lastPasswordEmailAt &&
+      (!user.passwordUpdatedAt ||
+        user.passwordUpdatedAt <= user.lastPasswordEmailAt)
+    ) {
+      return {
+        success: false,
+        message: 'У пользователя уже есть актуальный пароль на почте',
+      };
+    }
+
+    const newPassword = this.generatePassword();
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await this.prisma.user.update({
+      where: { id },
+      data: {
+        password: passwordHash,
+        passwordWasSent: true,
+        lastPasswordEmailAt: new Date(),
+      },
+    });
+
+    const appUrl =
+      this.configService.get<string>('APP_URL') ??
+      'https://grant-thornton.online';
+
+    await this.emailService.sendHtmlEmail(
+      user.email,
+      'Новый пароль к CRM',
+      `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
+        <h2>Новый пароль</h2>
+        <p><b>Логин:</b> ${user.email}<br/>
+        <b>Пароль:</b> ${newPassword}</p>
+        <a href="${appUrl.replace(/\/$/, '')}/login">Войти</a>
+      </div>
+      `,
+    );
+
+    return {
+      success: true,
+      message: 'Новый пароль отправлен на почту',
+    };
+  }
+
+  // ===== LIST USERS =====
   async findAll(params: ListUsersDto) {
     const { page, pageSize, role, search } = params;
     const where: Prisma.UserWhereInput = { isSystemUser: false };
@@ -161,10 +259,16 @@ export class UsersService implements OnModuleInit {
 
   async update(id: string, data: UpdateUserDto) {
     await this.findOne(id);
-    const payload: UpdateUserDto & { password?: string | null } = { ...data };
-    if (payload.password) payload.password = await bcrypt.hash(payload.password, 10);
 
+    const payload: UpdateUserDto & { password?: string | null } = { ...data };
     const updateData: Record<string, unknown> = {};
+
+    if (payload.password) {
+      updateData.password = await bcrypt.hash(payload.password, 10);
+      updateData.passwordUpdatedAt = new Date();
+      updateData.passwordWasSent = false;
+    }
+
     if (payload.email !== undefined) updateData.email = payload.email.trim();
     if (payload.fullName !== undefined)
       updateData.fullName = payload.fullName?.trim() || null;
@@ -173,7 +277,6 @@ export class UsersService implements OnModuleInit {
     if (payload.role !== undefined) updateData.role = payload.role;
     if (payload.phone !== undefined)
       updateData.phone = payload.phone?.trim() || null;
-    if (payload.password) updateData.password = payload.password;
 
     const updated = await this.prisma.user.update({
       where: { id },
@@ -188,10 +291,12 @@ export class UsersService implements OnModuleInit {
     await this.findOne(id);
     await this.prisma.notification.deleteMany({ where: { userId: id } });
     await this.prisma.assignment.deleteMany({ where: { userId: id } });
+
     const deleted = await this.prisma.user.delete({
       where: { id },
       select: this.baseSelect(),
     });
+
     return this.presentUser(deleted);
   }
 
@@ -212,23 +317,6 @@ export class UsersService implements OnModuleInit {
         ? { id: user.org.id, name: user.org.name, slug: user.org.slug }
         : null,
     };
-  }
-
-  // 🔔 Заглушка для отправки пароля (готова под интеграцию)
-  async sendPassword(id: string): Promise<SendPasswordResult> {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      select: { id: true, email: true, phone: true, isSystemUser: true },
-    });
-
-    if (!user) throw new NotFoundException('Пользователь не найден');
-    if (user.isSystemUser)
-      throw new BadRequestException('Отправка пароля системному пользователю запрещена');
-
-    // Здесь потом добавится логика отправки SMS/Email
-    throw new BadRequestException(
-      'Отправка пароля пока не настроена (SMS/Email шлюзы не подключены)',
-    );
   }
 
   private baseSelect() {
