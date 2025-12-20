@@ -38,7 +38,6 @@ enum NotificationType {
   ASSIGNMENT_MOVED
 }
 
-// 🔥 enum для типа смены
 enum ShiftKind {
   DEFAULT
   OFFICE
@@ -46,8 +45,13 @@ enum ShiftKind {
   DAY_OFF
 }
 
-// 🔥 enum для статуса запроса корректировки расписания
 enum AdjustmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AssignmentRequestStatus {
   PENDING
   APPROVED
   REJECTED
@@ -63,6 +67,8 @@ model Org {
   slots       Slot[]
   constraints Constraint[]
 
+  assignmentRequests AssignmentRequest[]
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -74,6 +80,8 @@ model User {
 
   email         String   @unique
   password      String
+  passwordPlain String?
+
   fullName      String?
   position      String?
   role          UserRole @default(USER)
@@ -81,7 +89,6 @@ model User {
   isSystemUser  Boolean  @default(false)
   phone         String?
 
-  // 🔐 ЛОГИКА ПАРОЛЕЙ / ПОЧТЫ (ФИНАЛ)
   passwordUpdatedAt DateTime?
   passwordSentAt    DateTime?
 
@@ -89,8 +96,13 @@ model User {
   notifications Notification[]
   slots         Slot[]
   constraints   Constraint[]
-
   scheduleAdjustments AssignmentAdjustment[]
+
+  assignmentRequests        AssignmentRequest[] @relation("AssignmentRequestRequester")
+  decidedAssignmentRequests AssignmentRequest[] @relation("AssignmentRequestDecider")
+
+  /// 🔹 Отчёты по отработанным часам
+  workReports   WorkReport[]
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -108,6 +120,7 @@ model Workplace {
   color       String?
 
   assignments Assignment[]
+  assignmentRequests AssignmentRequest[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -190,6 +203,8 @@ model Assignment {
 
   shifts      AssignmentShift[]
   adjustments AssignmentAdjustment[]
+
+  request     AssignmentRequest?
 }
 
 model AssignmentShift {
@@ -255,5 +270,59 @@ model AssignmentAdjustment {
   updatedAt    DateTime          @updatedAt
 
   @@index([assignmentId])
+  @@index([userId, date])
+}
+
+model AssignmentRequest {
+  id              String                  @id @default(cuid())
+
+  orgId           String
+  org             Org                     @relation(fields: [orgId], references: [id])
+
+  requesterId     String
+  requester       User                    @relation("AssignmentRequestRequester", fields: [requesterId], references: [id])
+
+  workplaceId     String?
+  workplace       Workplace?              @relation(fields: [workplaceId], references: [id])
+
+  dateFrom        DateTime
+  dateTo          DateTime
+
+  slots           Json
+  comment         String?
+  status          AssignmentRequestStatus  @default(PENDING)
+
+  decidedById     String?
+  decidedBy       User?                   @relation("AssignmentRequestDecider", fields: [decidedById], references: [id])
+  decidedAt       DateTime?
+  decisionComment String?
+
+  assignmentId    String?                 @unique
+  assignment      Assignment?             @relation(fields: [assignmentId], references: [id])
+
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([orgId, status])
+  @@index([status])
+  @@index([requesterId])
+  @@index([workplaceId])
+  @@index([decidedById])
+}
+
+/// 🔹 Новая таблица отчётов по часам
+model WorkReport {
+  id     String  @id @default(cuid())
+
+  userId String
+  user   User    @relation(fields: [userId], references: [id])
+
+  /// Дата дня (хранится как DateTime, мы в контроллере приводим к началу дня)
+  date  DateTime
+  hours Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([userId, date])
 }

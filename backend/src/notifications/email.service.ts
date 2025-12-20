@@ -47,7 +47,7 @@ export class EmailService {
   }
 
   /**
-   * Статус email-шлюза (для Dev-консоли, если понадобится)
+   * Статус email-шлюза
    */
   getSettings() {
     return {
@@ -167,7 +167,7 @@ export class EmailService {
   }
 
   /**
-   * Собираем письмо для назначения
+   * ⚠️ СТАРЫЙ текстовый билдер — ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ
    */
   private buildAssignmentMessage(payload: AssignmentEmailPayload) {
     const formatter = new Intl.DateTimeFormat('ru-RU', {
@@ -220,6 +220,64 @@ export class EmailService {
       /\r?\n/g,
       '\r\n',
     )}`;
+  }
+
+  /**
+   * ✅ НОВЫЙ HTML-билдер (Grant Thornton)
+   */
+  private buildAssignmentHtml(payload: AssignmentEmailPayload) {
+    const formatter = new Intl.DateTimeFormat('ru-RU');
+    const startsAt = formatter.format(payload.startsAt);
+    const endsAt = payload.endsAt
+      ? formatter.format(payload.endsAt)
+      : 'бессрочно';
+
+    const loginUrl = this.appUrl
+      ? `${this.appUrl.replace(/\/$/, '')}/login`
+      : '#';
+
+    const greetingName = payload.fullName?.trim() || payload.email;
+    const workplaceName = payload.workplaceName
+      ? ` — ${payload.workplaceName}`
+      : '';
+
+    return `
+<!doctype html>
+<html lang="ru">
+  <body style="font-family:Arial,sans-serif;background:#f5f6f8;padding:24px;">
+    <div style="max-width:600px;margin:auto;background:#ffffff;padding:24px;border-radius:8px;">
+      <h2 style="margin-top:0;color:#1f2937;">Новое назначение в Grant Thornton</h2>
+      <p>Здравствуйте, <strong>${greetingName}</strong>!</p>
+      <p>
+        Вас назначили на рабочее место
+        <strong>${payload.workplaceCode}${workplaceName}</strong>.
+      </p>
+      <p>Период: <strong>${startsAt} — ${endsAt}</strong></p>
+
+      <div style="margin:32px 0;text-align:center;">
+        <a
+          href="${loginUrl}"
+          style="
+            display:inline-block;
+            padding:14px 24px;
+            background:#0B5ED7;
+            color:#ffffff;
+            text-decoration:none;
+            border-radius:6px;
+            font-weight:600;
+          "
+        >
+          Войти в CRM
+        </a>
+      </div>
+
+      <p style="color:#6b7280;font-size:13px;">
+        Это письмо отправлено автоматически.
+      </p>
+    </div>
+  </body>
+</html>
+`;
   }
 
   /**
@@ -309,11 +367,16 @@ export class EmailService {
   }
 
   /**
-   * Уведомление о назначении
+   * 🔔 Уведомление о назначении
+   * ⚠️ ТЕПЕРЬ: HTML + Grant Thornton
    */
   async sendAssignmentNotification(payload: AssignmentEmailPayload) {
-    const message = this.buildAssignmentMessage(payload);
-    await this.sendRawMail(payload.email, message);
+    const html = this.buildAssignmentHtml(payload);
+    await this.sendHtmlEmail(
+      payload.email,
+      'Новое назначение в Grant Thornton',
+      html,
+    );
   }
 
   /**
@@ -329,7 +392,7 @@ export class EmailService {
   }
 
   /**
-   * ✅ НОВЫЙ МЕТОД: HTML-письмо (для создания пользователя и кнопки "Оповестить")
+   * HTML-письмо (универсальное)
    */
   async sendHtmlEmail(to: string, subject: string, html: string) {
     const encodedSubject = this.encodeSubject(subject);

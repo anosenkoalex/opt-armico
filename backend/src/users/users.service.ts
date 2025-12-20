@@ -5,7 +5,7 @@ import {
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import { Prisma, UserRole, AssignmentStatus } from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
@@ -46,6 +46,7 @@ export class UsersService implements OnModuleInit {
     private readonly configService: ConfigService,
   ) {}
 
+  // ===== INIT SYSTEM ADMIN =====
   async onModuleInit(): Promise<void> {
     let org = await this.prisma.org.findUnique({
       where: { slug: DEFAULT_ORG_SLUG },
@@ -63,17 +64,16 @@ export class UsersService implements OnModuleInit {
 
     if (!existingAdmin) {
       const passwordHash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
+
       await this.prisma.user.create({
         data: {
           email: DEFAULT_ADMIN_EMAIL,
           password: passwordHash,
+          passwordPlain: null,
           role: UserRole.SUPER_ADMIN,
           orgId: org.id,
           fullName: 'System Administrator',
-          position: null,
-          phone: null,
           isSystemUser: true,
-          passwordSentAt: new Date(),
           passwordUpdatedAt: new Date(),
         },
       });
@@ -129,100 +129,118 @@ export class UsersService implements OnModuleInit {
         : this.generatePassword();
 
     const passwordHash = await bcrypt.hash(rawPassword, 10);
+    const isAdmin = data.role === UserRole.SUPER_ADMIN;
 
     const created = await this.prisma.user.create({
       data: {
         email,
         password: passwordHash,
+        passwordPlain: isAdmin ? null : rawPassword,
         role: data.role ?? UserRole.USER,
         orgId,
         fullName: data.fullName?.trim() || null,
         position: data.position?.trim() || null,
         phone: data.phone?.trim() || null,
         isSystemUser: false,
-        ...(sendPassword ? { passwordSentAt: new Date() } : {}),
+        passwordSentAt: sendPassword ? new Date() : null,
+        passwordUpdatedAt: new Date(),
       },
       include: {
-        org: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-          },
-        },
+        org: { select: { id: true, name: true, slug: true } },
       },
     });
 
-    if (sendPassword) {
-      const appUrl =
-        this.configService.get<string>('APP_URL') ??
-        'https://grant-thornton.online';
-
-      await this.emailService.sendHtmlEmail(
-        email,
-        'Доступ к CRM',
-        `
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
-          <h2>Добро пожаловать в CRM</h2>
-          <p><b>Логин:</b> ${email}<br/>
-          <b>Пароль:</b> ${rawPassword}</p>
-          <a
-            href="${appUrl.replace(/\/$/, '')}/login"
-            style="display:inline-block;padding:10px 16px;background:#1677ff;color:#fff;text-decoration:none;border-radius:6px;margin-top:12px"
-          >
-            Go to CRM
-          </a>
-        </div>
-        `,
-      ).catch((e) => this.logger.error(e));
+    if (sendPassword && !isAdmin) {
+      await this.sendEmailWithPassword(email, rawPassword);
     }
 
-    return { ...this.presentUser(created), rawPassword };
+    return this.presentUser(created);
   }
 
-  // ===== SEND PASSWORD =====
+  // ===== SEND PASSWORD (NO RESET IF POSSIBLE) =====
   async sendPassword(id: string): Promise<SendPasswordResult> {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Пользователь не найден');
 
-    const appUrl =
-      this.configService.get<string>('APP_URL') ??
-      'https://grant-thornton.online';
+    if (user.role === UserRole.SUPER_ADMIN) {
+      throw new ConflictException('Пароль администратора не отправляется');
+    }
 
-    await this.emailService
-      .sendHtmlEmail(
-        user.email,
-        'Пароль к CRM',
-        `
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
-          <h2>Пароль для входа</h2>
-          <p><b>Логин:</b> ${user.email}<br/>
-          <b>Пароль:</b> ${user.password}</p>
-          <a
-            href="${appUrl.replace(/\/$/, '')}/login"
-            style="display:inline-block;padding:10px 16px;background:#1677ff;color:#fff;text-decoration:none;border-radius:6px;margin-top:12px"
-          >
-            Go to CRM
-          </a>
-        </div>
-        `,
-      )
-      .catch((e) => this.logger.error(e));
+    if (user.passwordPlain) {
+      await this.sendEmailWithPassword(user.email, user.passwordPlain);
+
+      await this.prisma.user.update({
+        where: { id },
+        data: { passwordSentAt: new Date() },
+      });
+
+      return {
+        success: true,
+        message: 'Пароль отправлен',
+      };
+    }
+
+    return this.resetPasswordAndSend(id);
+  }
+
+  // ===== RESET PASSWORD + SEND =====
+  async resetPasswordAndSend(id: string): Promise<SendPasswordResult> {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Пользователь не найден');
+
+    if (user.role === UserRole.SUPER_ADMIN) {
+      throw new ConflictException('Пароль администратора нельзя сбросить');
+    }
+
+    const newPassword = this.generatePassword();
+    const passwordHash = await bcrypt.hash(newPassword, 10);
 
     await this.prisma.user.update({
       where: { id },
       data: {
+        password: passwordHash,
+        passwordPlain: newPassword,
+        passwordUpdatedAt: new Date(),
         passwordSentAt: new Date(),
       },
     });
 
+    await this.sendEmailWithPassword(user.email, newPassword);
+
     return {
       success: true,
-      message: 'Пароль отправлен на почту',
+      message: 'Новый пароль отправлен',
     };
   }
 
-  // ===== LIST USERS =====
+  // ===== EMAIL HELPER =====
+  private async sendEmailWithPassword(email: string, password: string) {
+    const appUrl =
+      this.configService.get<string>('APP_URL') ??
+      'https://grant-thornton.online';
+
+    await this.emailService.sendHtmlEmail(
+      email,
+      'Доступ к CRM',
+      `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
+        <h2>Доступ к CRM</h2>
+        <p>
+          <b>Логин:</b> ${email}<br/>
+          <b>Пароль:</b> ${password}
+        </p>
+        <a
+          href="${appUrl.replace(/\/$/, '')}/login"
+          style="display:inline-block;padding:10px 16px;background:#1677ff;color:#fff;text-decoration:none;border-radius:6px;margin-top:12px"
+        >
+          Войти в CRM
+        </a>
+      </div>
+      `,
+    );
+  }
+
+  // ===== LIST / UPDATE / DELETE =====
   async findAll(params: ListUsersDto) {
     const { page, pageSize, role, search } = params;
     const where: Prisma.UserWhereInput = { isSystemUser: false };
@@ -237,7 +255,7 @@ export class UsersService implements OnModuleInit {
       ];
     }
 
-    const [items, total] = await Promise.all([
+    const [items, total, usersWithAssignments] = await Promise.all([
       this.prisma.user.findMany({
         where,
         select: this.baseSelect(),
@@ -246,10 +264,26 @@ export class UsersService implements OnModuleInit {
         take: pageSize,
       }),
       this.prisma.user.count({ where }),
+      // список userId, у которых есть АКТИВНЫЕ назначения (не удалённые)
+      this.prisma.assignment.findMany({
+        where: {
+          status: AssignmentStatus.ACTIVE,
+          deletedAt: null,
+          user: { isSystemUser: false },
+        },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
     ]);
 
+    const usersWithAssignmentsSet = new Set(
+      usersWithAssignments.map((x) => x.userId),
+    );
+
     return {
-      data: items.map((u) => this.presentUser(u)),
+      data: items.map((u) =>
+        this.presentUser(u, usersWithAssignmentsSet),
+      ),
       meta: { total, page, pageSize },
     };
   }
@@ -266,23 +300,23 @@ export class UsersService implements OnModuleInit {
   async update(id: string, data: UpdateUserDto) {
     await this.findOne(id);
 
-    const payload: UpdateUserDto & { password?: string | null } = { ...data };
     const updateData: Record<string, unknown> = {};
 
-    if (payload.password) {
-      updateData.password = await bcrypt.hash(payload.password, 10);
+    if (data.password) {
+      updateData.password = await bcrypt.hash(data.password, 10);
+      updateData.passwordPlain = null;
       updateData.passwordUpdatedAt = new Date();
       updateData.passwordSentAt = null;
     }
 
-    if (payload.email !== undefined) updateData.email = payload.email.trim();
-    if (payload.fullName !== undefined)
-      updateData.fullName = payload.fullName?.trim() || null;
-    if (payload.position !== undefined)
-      updateData.position = payload.position?.trim() || null;
-    if (payload.role !== undefined) updateData.role = payload.role;
-    if (payload.phone !== undefined)
-      updateData.phone = payload.phone?.trim() || null;
+    if (data.email !== undefined) updateData.email = data.email.trim();
+    if (data.fullName !== undefined)
+      updateData.fullName = data.fullName?.trim() || null;
+    if (data.position !== undefined)
+      updateData.position = data.position?.trim() || null;
+    if (data.role !== undefined) updateData.role = data.role;
+    if (data.phone !== undefined)
+      updateData.phone = data.phone?.trim() || null;
 
     const updated = await this.prisma.user.update({
       where: { id },
@@ -306,25 +340,6 @@ export class UsersService implements OnModuleInit {
     return this.presentUser(deleted);
   }
 
-  async getProfile(id: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      include: { org: true },
-    });
-    if (!user) throw new NotFoundException('User not found');
-
-    return {
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName ?? null,
-      position: user.position ?? null,
-      role: user.role,
-      org: user.org
-        ? { id: user.org.id, name: user.org.name, slug: user.org.slug }
-        : null,
-    };
-  }
-
   private baseSelect() {
     return {
       id: true,
@@ -340,7 +355,14 @@ export class UsersService implements OnModuleInit {
     } as const;
   }
 
-  private presentUser(user: SelectedUser) {
+  private presentUser(
+    user: SelectedUser,
+    usersWithAssignments?: Set<string>,
+  ) {
+    const hasActiveAssignments = usersWithAssignments
+      ? usersWithAssignments.has(user.id)
+      : undefined;
+
     return {
       id: user.id,
       email: user.email,
@@ -353,6 +375,8 @@ export class UsersService implements OnModuleInit {
       org: user.org
         ? { id: user.org.id, name: user.org.name, slug: user.org.slug }
         : null,
+      // флаг для фронта: есть ли у пользователя ХОТЯ БЫ ОДНО активное назначение
+      hasActiveAssignments,
     };
   }
 }

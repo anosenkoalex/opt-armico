@@ -1,4 +1,3 @@
-// frontend/src/pages/AssignmentAdjustments.tsx
 import {
   Button,
   Card,
@@ -27,7 +26,6 @@ import {
 
 import { useAuth } from '../context/AuthContext.js';
 
-// статус → цвет
 const statusColor: Record<ScheduleAdjustmentStatus, string> = {
   PENDING: 'blue',
   APPROVED: 'green',
@@ -49,7 +47,6 @@ const AssignmentAdjustmentsPage = () => {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
-  // загрузка корректировок
   const adjustmentsQuery = useQuery({
     queryKey: ['schedule-adjustments', { statusFilter, page, pageSize }],
     queryFn: () =>
@@ -62,7 +59,6 @@ const AssignmentAdjustmentsPage = () => {
     keepPreviousData: true,
   });
 
-  // approve
   const approveMutation = useMutation({
     mutationFn: (id: string) => approveScheduleAdjustment(id),
     onSuccess: () => {
@@ -75,7 +71,6 @@ const AssignmentAdjustmentsPage = () => {
     },
   });
 
-  // reject
   const rejectMutation = useMutation({
     mutationFn: (id: string) => rejectScheduleAdjustment(id),
     onSuccess: () => {
@@ -96,6 +91,7 @@ const AssignmentAdjustmentsPage = () => {
       {
         title: 'Создан',
         dataIndex: 'createdAt',
+        responsive: ['md'],
         render: (value: string) => dayjs(value).format('DD.MM.YYYY HH:mm'),
       },
       {
@@ -105,6 +101,7 @@ const AssignmentAdjustmentsPage = () => {
       },
       {
         title: 'Место',
+        responsive: ['md'],
         render: (_, record) => {
           const wp = record.assignment?.workplace;
           if (!wp) return '—';
@@ -118,6 +115,7 @@ const AssignmentAdjustmentsPage = () => {
       },
       {
         title: 'Время / тип',
+        responsive: ['md'],
         render: (_, record) => {
           const start = record.startsAt
             ? dayjs(record.startsAt).format('HH:mm')
@@ -144,6 +142,7 @@ const AssignmentAdjustmentsPage = () => {
       {
         title: 'Комментарий',
         dataIndex: 'comment',
+        responsive: ['lg'],
         render: (v) => v || '—',
       },
       {
@@ -165,7 +164,7 @@ const AssignmentAdjustmentsPage = () => {
           const pending = record.status === 'PENDING';
 
           return (
-            <Space>
+            <Space wrap>
               <Button
                 type="link"
                 disabled={!pending}
@@ -196,12 +195,13 @@ const AssignmentAdjustmentsPage = () => {
   return (
     <Card
       title="Запросы корректировок"
+      bodyStyle={{ padding: 12 }}
       extra={
-        <Space>
+        <Space wrap>
           <Typography.Text>Статус:</Typography.Text>
           <Select
             value={statusFilter}
-            style={{ width: 180 }}
+            style={{ minWidth: 160 }}
             onChange={(v) => {
               setStatusFilter(v as any);
               setPage(1);
@@ -221,6 +221,8 @@ const AssignmentAdjustmentsPage = () => {
         dataSource={items}
         columns={columns}
         loading={adjustmentsQuery.isLoading}
+        size="small"
+        scroll={{ x: 'max-content' }}
         pagination={{
           current: page,
           pageSize,

@@ -8,6 +8,7 @@ import { I18nextProvider } from 'react-i18next';
 import App from './App.js';
 import 'antd/dist/reset.css';
 import './index.css';
+import './styles/responsive.css'; // ✅ ГЛОБАЛЬНЫЙ АДАПТИВ (НОВОЕ)
 import i18n from './i18n.js';
 import { AuthProvider } from './context/AuthContext.js';
 

@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AssignmentStatus, SlotStatus } from '@prisma/client';
@@ -18,14 +19,26 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { z } from 'zod';
 import * as bcrypt from 'bcryptjs';
+import dayjs from 'dayjs';
 
-// ====== Zod-схемы ======
+/* ========= Zod-схемы ========= */
 
+// Отчёт по отработанным часам
+const createWorkReportSchema = z.object({
+  date: z.string().min(1, 'Дата обязательна'),        // YYYY-MM-DD
+  hours: z
+    .coerce.number()                                  // <-- главное изменение: приводим строку к number
+    .min(0, 'Часы не могут быть отрицательными'),
+});
+type CreateWorkReportDto = z.infer<typeof createWorkReportSchema>;
+
+// Запрос на корректировку слота
 const requestSwapSchema = z.object({
   comment: z.string().min(1, 'Комментарий обязателен'),
 });
 type RequestSwapDto = z.infer<typeof requestSwapSchema>;
 
+// Запрос на корректировку назначения
 const requestAssignmentAdjustmentSchema = z.object({
   comment: z.string().min(1, 'Комментарий обязателен'),
 });
@@ -33,7 +46,7 @@ type RequestAssignmentAdjustmentDto = z.infer<
   typeof requestAssignmentAdjustmentSchema
 >;
 
-// 🔐 СМЕНА ПАРОЛЯ
+// Смена пароля
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Текущий пароль обязателен'),
   newPassword: z.string().min(6, 'Новый пароль минимум 6 символов'),
@@ -75,7 +88,7 @@ export class MeController {
   }
 
   /**
-   * 🔐 СМЕНА ПАРОЛЯ ПОЛЬЗОВАТЕЛЕМ
+   * 🔐 Смена пароля пользователем
    * PATCH /me/change-password
    */
   @Patch('change-password')
@@ -106,12 +119,60 @@ export class MeController {
       where: { id: user.sub },
       data: {
         password: newHash,
+        passwordPlain: body.newPassword,
         passwordUpdatedAt: new Date(),
+        passwordSentAt: null,
       },
     });
 
     return { success: true };
   }
+
+  /**
+   * Создать/обновить отчёт по отработанным часам за день
+   * POST /me/work-reports
+   *
+   * Логика:
+   *  - на одну дату может быть только один отчёт;
+   *  - при повторном сохранении за этот день старый отчёт удаляется;
+   *  - никаких типов (DAY_OFF и т.п.) — просто факт, сколько часов отработано.
+   */
+  @Post('work-reports')
+  async createWorkReport(
+    @CurrentUser() user: JwtPayload,
+    @Body(new ZodValidationPipe(createWorkReportSchema))
+    body: CreateWorkReportDto,
+  ) {
+    const dateStart = dayjs(body.date).startOf('day').toDate();
+    const dateEnd = dayjs(body.date).endOf('day').toDate();
+
+    const report = await this.prisma.$transaction(async (tx) => {
+      // На всякий случай стираем все отчёты за этот день
+      await tx.workReport.deleteMany({
+        where: {
+          userId: user.sub,
+          date: {
+            gte: dateStart,
+            lte: dateEnd,
+          },
+        },
+      });
+
+      return tx.workReport.create({
+        data: {
+          userId: user.sub,
+          date: dateStart,
+          hours: body.hours,
+        },
+      });
+    });
+
+    return { success: true, id: report.id };
+  }
+
+  /* =======================
+   * Рабочее место и расписание
+   * ======================= */
 
   /**
    * Текущее рабочее место + история назначений
@@ -128,9 +189,7 @@ export class MeController {
             code: true,
             name: true,
             location: true,
-            org: {
-              select: { id: true, name: true, slug: true },
-            },
+            org: { select: { id: true, name: true, slug: true } },
           },
         },
         shifts: {
@@ -140,7 +199,7 @@ export class MeController {
           ],
         },
       },
-      orderBy: [{ startsAt: 'asc' }],
+      orderBy: [{ startsAt: 'asc' as const }],
     });
 
     if (assignments.length === 0) {
@@ -182,23 +241,51 @@ export class MeController {
    */
   @Get('schedule')
   async getSchedule(@CurrentUser() user: JwtPayload) {
+    const assignments = await this.prisma.assignment.findMany({
+      where: { userId: user.sub },
+      include: {
+        workplace: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            location: true,
+            org: { select: { id: true, name: true, slug: true } },
+          },
+        },
+        shifts: {
+          orderBy: [
+            { date: 'asc' as const },
+            { startsAt: 'asc' as const },
+          ],
+        },
+      },
+      orderBy: [{ startsAt: 'asc' as const }],
+    });
+
     const slots = await this.prisma.slot.findMany({
       where: { userId: user.sub },
       include: {
         plan: { select: { id: true, name: true, status: true } },
         org: { select: { id: true, name: true, slug: true } },
         user: {
-          select: { id: true, email: true, fullName: true, position: true },
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            position: true,
+          },
         },
       },
-      orderBy: [{ dateStart: 'asc' }],
+      orderBy: [{ dateStart: 'asc' as const }],
     });
 
-    return slots;
+    return { assignments, slots };
   }
 
   /**
    * Подтвердить слот
+   * PATCH /me/slots/:slotId/confirm
    */
   @Patch('slots/:slotId/confirm')
   async confirmMySlot(
@@ -224,7 +311,12 @@ export class MeController {
         plan: { select: { id: true, name: true, status: true } },
         org: { select: { id: true, name: true, slug: true } },
         user: {
-          select: { id: true, email: true, fullName: true, position: true },
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            position: true,
+          },
         },
       },
     });
@@ -232,6 +324,7 @@ export class MeController {
 
   /**
    * Запрос корректировки слота
+   * POST /me/slots/:slotId/request-swap
    */
   @Post('slots/:slotId/request-swap')
   async requestSwap(
@@ -263,7 +356,12 @@ export class MeController {
         plan: { select: { id: true, name: true, status: true } },
         org: { select: { id: true, name: true, slug: true } },
         user: {
-          select: { id: true, email: true, fullName: true, position: true },
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            position: true,
+          },
         },
       },
     });
@@ -271,6 +369,7 @@ export class MeController {
 
   /**
    * Запрос корректировки назначения
+   * POST /me/assignments/:assignmentId/request-adjustment
    */
   @Post('assignments/:assignmentId/request-adjustment')
   async requestAssignmentAdjustment(

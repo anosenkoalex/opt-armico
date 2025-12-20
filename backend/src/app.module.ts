@@ -14,6 +14,7 @@ import { PlannerModule } from './planner/planner.module.js';
 import { SmsModule } from './sms/sms.module.js';
 import { DevModule } from './dev/dev.module.js';
 import { StatisticsModule } from './statistics/statistics.module.js';
+import { ReportModule } from './report/report.module.js'; // 👈 добавили
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { StatisticsModule } from './statistics/statistics.module.js';
     // misc
     DevModule,
     StatisticsModule,
+    ReportModule, // 👈 подключили модуль отчётов
   ],
 })
 export class AppModule {}

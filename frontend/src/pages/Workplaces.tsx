@@ -244,29 +244,6 @@ const WorkplacesPage = () => {
         key: 'name',
       },
       {
-        title: t('workplaces.color'),
-        dataIndex: 'color',
-        key: 'color',
-        render: (value?: string) =>
-          value ? (
-            <Space size="small">
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: 16,
-                  height: 16,
-                  borderRadius: 4,
-                  border: '1px solid #ddd',
-                  backgroundColor: value,
-                }}
-              />
-              <Typography.Text>{value}</Typography.Text>
-            </Space>
-          ) : (
-            <Typography.Text type="secondary">{t('common.notSet')}</Typography.Text>
-          ),
-      },
-      {
         title: t('workplaces.status'),
         dataIndex: 'isActive',
         key: 'isActive',

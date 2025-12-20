@@ -7,19 +7,22 @@ import {
   Select,
   Table,
   Typography,
+  Calendar,
+  Spin,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
 import dayjs, { Dayjs } from 'dayjs';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchUsers, fetchStatistics } from '../api/client.js';
+import { fetchUsers, fetchStatistics, fetchWorkReports } from '../api/client.js';
 import type {
   AssignmentStatus,
   User,
   ShiftKind,
   StatisticsRow,
   StatisticsResponse,
+  WorkReport,
 } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.js';
 
@@ -56,6 +59,8 @@ type EmployeeRow = {
   assignmentsSummary: string;
   workingDays: number;
   totalHours: number;
+  /** Суммарные отчётные часы по WorkReport за период */
+  reportedHours?: number | null;
 };
 
 const StatisticsPage = () => {
@@ -76,6 +81,9 @@ const StatisticsPage = () => {
 
   const [detailsUserId, setDetailsUserId] = useState<string | null>(null);
   const [detailsUserName, setDetailsUserName] = useState<string>('');
+
+  const [reportUserId, setReportUserId] = useState<string | null>(null);
+  const [reportUserName, setReportUserName] = useState<string>('');
 
   if (!canViewStatistics) {
     return <Result status="403" title={t('admin.accessDenied')} />;
@@ -120,6 +128,16 @@ const StatisticsPage = () => {
 
   const statistics = statisticsQuery.data;
   const allRows: StatisticsRow[] = statistics?.rows ?? [];
+
+  // Мапа суммарных отчётных часов по пользователю (backend: StatisticsResponse.byUser[].reportedHour)
+  const reportedHoursByUser = useMemo(() => {
+    const map: Record<string, number | null> = {};
+    if (!statistics?.byUser) return map;
+    for (const u of statistics.byUser) {
+      map[u.userId] = u.reportedHour ?? null;
+    }
+    return map;
+  }, [statistics]);
 
   /* ---------- опции рабочих мест для фильтра ---------- */
 
@@ -222,15 +240,18 @@ const StatisticsPage = () => {
         })
         .join('; ');
 
+      const reported = reportedHoursByUser[userId] ?? null;
+
       return {
         userId,
         name: agg.name,
         assignmentsSummary,
         workingDays: agg.daysSet.size,
         totalHours: Number(agg.totalHours.toFixed(2)),
+        reportedHours: reported,
       };
     });
-  }, [filteredRows]);
+  }, [filteredRows, reportedHoursByUser]);
 
   /* ---------- данные для модалки по сотруднику ---------- */
 
@@ -258,6 +279,35 @@ const StatisticsPage = () => {
       return dayjs(a.startsAt).diff(dayjs(b.startsAt));
     });
   }, [filteredRows, detailsUserId]);
+
+  // Загрузка отчётных часов для выбранного пользователя (для календаря)
+  const workReportsQuery = useQuery<WorkReport[]>({
+    queryKey: [
+      'workReports',
+      {
+        userId: reportUserId,
+        from: effectiveFrom.format('YYYY-MM-DD'),
+        to: effectiveTo.format('YYYY-MM-DD'),
+      },
+    ],
+    queryFn: () =>
+      fetchWorkReports({
+        userId: reportUserId!,
+        from: effectiveFrom.format('YYYY-MM-DD'),
+        to: effectiveTo.format('YYYY-MM-DD'),
+      }),
+    enabled: !!reportUserId,
+  });
+
+  const workReportsByDate = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (!workReportsQuery.data) return map;
+    for (const wr of workReportsQuery.data) {
+      const key = wr.date;
+      map[key] = (map[key] ?? 0) + wr.hours;
+    }
+    return map;
+  }, [workReportsQuery.data]);
 
   const isLoading = statisticsQuery.isLoading || usersQuery.isLoading;
 
@@ -295,6 +345,24 @@ const StatisticsPage = () => {
       dataIndex: 'totalHours',
       key: 'totalHours',
       render: (value: number) => value.toFixed(2),
+    },
+    {
+      title: 'Количество отчётных часов',
+      dataIndex: 'reportedHours',
+      key: 'reportedHours',
+      render: (value: number | null | undefined, record) =>
+        value != null ? (
+          <a
+            onClick={() => {
+              setReportUserId(record.userId);
+              setReportUserName(record.name);
+            }}
+          >
+            {value.toFixed(2)}
+          </a>
+        ) : (
+          '—'
+        ),
     },
   ];
 
@@ -422,6 +490,58 @@ const StatisticsPage = () => {
           emptyText: 'Нет данных за выбранный период',
         }}
       />
+
+      {/* Календарь отчётных часов по пользователю */}
+      <Modal
+        open={!!reportUserId}
+        title={
+          reportUserName
+            ? `Отчётные часы: ${reportUserName}`
+            : 'Отчётные часы'
+        }
+        footer={null}
+        width={800}
+        onCancel={() => {
+          setReportUserId(null);
+          setReportUserName('');
+        }}
+      >
+        {!reportUserId ? null : workReportsQuery.isLoading ? (
+          <Spin />
+        ) : workReportsQuery.data && workReportsQuery.data.length > 0 ? (
+          <Calendar
+            fullscreen={false}
+            dateFullCellRender={(value) => {
+              const key = value.format('YYYY-MM-DD');
+              const hours = workReportsByDate[key];
+              const outOfRange =
+                value.isBefore(effectiveFrom, 'day') ||
+                value.isAfter(effectiveTo, 'day');
+
+              return (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    opacity: outOfRange ? 0.35 : 1,
+                  }}
+                >
+                  <div>{value.date()}</div>
+                  {hours != null && (
+                    <div style={{ fontSize: 11 }}>
+                      <strong>{hours}</strong> ч
+                    </div>
+                  )}
+                </div>
+              );
+            }}
+            defaultValue={effectiveFrom}
+          />
+        ) : (
+          <Typography.Text type="secondary">
+            Нет отчётных часов за выбранный период.
+          </Typography.Text>
+        )}
+      </Modal>
 
       {/* Детализация по сотруднику */}
       <Modal

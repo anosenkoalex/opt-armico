@@ -148,9 +148,8 @@ export class PlannerService {
     const rangeFrom = new Date(`${fromKey}T00:00:00.000Z`);
     const rangeTo = new Date(`${toKey}T23:59:59.999Z`);
 
-    // Те же фильтры, что и в collectRows, но для выборки назначений под экспорт
+    // Фильтры для выборки назначений под экспорт
     const isSuperAdmin = auth.role === UserRole.SUPER_ADMIN;
-    const effectiveUserId = isSuperAdmin ? params.userId : auth.sub;
     const effectiveOrgId = isSuperAdmin ? params.orgId : auth.orgId;
 
     const where: Prisma.AssignmentWhereInput = {
@@ -160,7 +159,8 @@ export class PlannerService {
         : { status: AssignmentStatus.ACTIVE }),
       startsAt: { lte: rangeTo },
       OR: [{ endsAt: null }, { endsAt: { gte: rangeFrom } }],
-      ...(effectiveUserId ? { userId: effectiveUserId } : {}),
+      // фильтр по конкретному пользователю только если он явно передан
+      ...(params.userId ? { userId: params.userId } : {}),
     };
 
     if (effectiveOrgId) {
@@ -339,7 +339,6 @@ export class PlannerService {
       throw new NotFoundException('Пользователь не привязан к организации');
     }
 
-    const effectiveUserId = isSuperAdmin ? params.userId : auth.sub;
     const effectiveOrgId = isSuperAdmin ? params.orgId : auth.orgId;
 
     const where: Prisma.AssignmentWhereInput = {
@@ -349,7 +348,8 @@ export class PlannerService {
         : { status: AssignmentStatus.ACTIVE }),
       startsAt: { lte: params.to },
       OR: [{ endsAt: null }, { endsAt: { gte: params.from } }],
-      ...(effectiveUserId ? { userId: effectiveUserId } : {}),
+      // фильтр по конкретному пользователю — только если явно передан
+      ...(params.userId ? { userId: params.userId } : {}),
     };
 
     if (effectiveOrgId) {
@@ -370,6 +370,7 @@ export class PlannerService {
             email: true,
             fullName: true,
             position: true,
+            role: true, // 👈 добавили роль, чтобы уметь исключать менеджера
           },
         },
         workplace: {
@@ -403,6 +404,11 @@ export class PlannerService {
     >();
 
     for (const assignment of assignments) {
+      // 💡 на всякий случай: если вдруг у менеджера есть назначение — пропускаем
+      if (assignment.user?.role === UserRole.MANAGER) {
+        continue;
+      }
+
       const slot: PlannerMatrixSlot = {
         id: assignment.id,
         from: assignment.startsAt.toISOString(),
@@ -451,6 +457,7 @@ export class PlannerService {
         });
     }
 
+    // ------ РЕЖИМ ПО РАБОЧИМ МЕСТАМ (как было) ------
     if (params.mode === 'byWorkplaces') {
       const workplaceIds = Array.from(workplaceSlots.keys());
       const workplaceWhere: Prisma.WorkplaceWhereInput = {};
@@ -505,17 +512,71 @@ export class PlannerService {
         );
     }
 
-    // режим по пользователям
-    return Array.from(userGroups.entries())
-      .map(([key, group]) => ({
-        key,
+    // ------ РЕЖИМ ПО СОТРУДНИКАМ: ВСЕ СОТРУДНИКИ, ДАЖЕ БЕЗ НАЗНАЧЕНИЙ ------
+
+    const usersWhere: Prisma.UserWhereInput = {
+      isSystemUser: false,
+      role: { not: UserRole.MANAGER }, // 👈 менеджеров из списка не берём
+    };
+
+    if (effectiveOrgId) {
+      usersWhere.orgId = effectiveOrgId;
+    }
+    if (params.userId) {
+      usersWhere.id = params.userId;
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: usersWhere,
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        position: true,
+      },
+      orderBy: [{ fullName: 'asc' }, { email: 'asc' }],
+    });
+
+    const rows: PlannerMatrixRow[] = users.map((user) => {
+      const title = user.fullName?.trim() ? user.fullName : user.email;
+      const subtitle = user.position ?? undefined;
+      const group = userGroups.get(user.id);
+      const slots = (group?.slots ?? []).sort((a, b) =>
+        a.from.localeCompare(b.from),
+      );
+
+      return {
+        key: user.id,
+        title,
+        subtitle,
+        slots,
+      };
+    });
+
+    // На всякий случай — если вдруг есть назначения на пользователя,
+    // которого нет в выборке users (маловероятно), можно их добросить.
+    for (const [userId, group] of userGroups.entries()) {
+      const already = rows.find((r) => r.key === userId);
+      if (already) continue;
+
+      rows.push({
+        key: userId,
         title: group.title,
         subtitle: group.subtitle,
         slots: group.slots.sort((a, b) => a.from.localeCompare(b.from)),
-      }))
-      .filter(Boolean)
-      .sort((a, b) =>
-        (a?.title ?? '').localeCompare(b?.title ?? '', 'ru', { numeric: true }),
-      );
+      });
+    }
+
+    // Сначала сотрудники с назначениями, затем без них.
+    const rowsWithSlots = rows.filter((r) => r.slots.length > 0);
+    const rowsWithoutSlots = rows.filter((r) => r.slots.length === 0);
+
+    const sortByTitle = (a: PlannerMatrixRow, b: PlannerMatrixRow) =>
+      (a.title ?? '').localeCompare(b.title ?? '', 'ru', { numeric: true });
+
+    rowsWithSlots.sort(sortByTitle);
+    rowsWithoutSlots.sort(sortByTitle);
+
+    return [...rowsWithSlots, ...rowsWithoutSlots];
   }
 }

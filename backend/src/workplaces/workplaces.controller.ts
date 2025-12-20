@@ -42,8 +42,9 @@ export class WorkplacesController {
     return this.workplacesService.create(payload);
   }
 
+  // ✅ Доступно всем авторизованным ролям (чтобы USER мог выбрать любое рабочее место в модалке)
   @Get()
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER, UserRole.USER)
   findAll(
     @Query(new ZodValidationPipe(listWorkplacesSchema))
     query: ListWorkplacesDto,
@@ -51,8 +52,9 @@ export class WorkplacesController {
     return this.workplacesService.findAll(query);
   }
 
+  // ✅ Аналогично — чтение одного workplace
   @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER, UserRole.USER)
   findOne(@Param('id') id: string) {
     return this.workplacesService.findOne(id);
   }

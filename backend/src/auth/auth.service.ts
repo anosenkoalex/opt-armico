@@ -4,7 +4,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcryptjs'; // ← тут поменяли
+import * as bcrypt from 'bcrypt';      // ✅ основной
+import * as bcryptjs from 'bcryptjs';  // ⚠️ поддержка старых/сломаных хешей
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { JwtPayload } from './jwt-payload.interface.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -27,10 +28,41 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    let isPasswordValid = false;
+    let usedLegacyHash = false;
+
+    // 1️⃣ Пробуем НОРМАЛЬНЫЙ bcrypt (как было раньше)
+    try {
+      isPasswordValid = await bcrypt.compare(password, user.password);
+    } catch {
+      isPasswordValid = false;
+    }
+
+    // 2️⃣ Если не совпало — пробуем bcryptjs (кодекс мог насрать)
+    if (!isPasswordValid) {
+      try {
+        isPasswordValid = await bcryptjs.compare(password, user.password);
+        usedLegacyHash = isPasswordValid;
+      } catch {
+        isPasswordValid = false;
+      }
+    }
 
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // 3️⃣ Если пароль совпал через bcryptjs — ПЕРЕХЕШИРОВАТЬ НОРМАЛЬНО
+    if (usedLegacyHash) {
+      const newHash = await bcrypt.hash(password, 10);
+
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          password: newHash,
+          passwordUpdatedAt: new Date(),
+        },
+      });
     }
 
     return user;
@@ -80,6 +112,7 @@ export class AuthService {
       }
     }
 
+    // ✅ Всегда хешируем НОРМАЛЬНЫМ bcrypt
     const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await this.prisma.user.create({

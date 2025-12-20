@@ -10,6 +10,7 @@ import {
   Prisma,
   UserRole,
   ShiftKind,
+  AssignmentRequestStatus,
 } from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CreateAssignmentDto } from './dto/create-assignment.dto.js';
@@ -41,6 +42,28 @@ type ScheduleAdjustmentDecisionPayload = {
   managerComment?: string;
 };
 
+type ApproveOrReject = 'APPROVED' | 'REJECTED';
+
+type CreateAssignmentRequestPayload = {
+  workplaceId?: string | null;
+  dateFrom: string | Date;
+  dateTo: string | Date;
+  slots?: unknown;
+  comment?: string | null;
+};
+
+type ListAssignmentRequestsParams = {
+  page?: number;
+  pageSize?: number;
+  status?: AssignmentRequestStatus;
+  requesterId?: string;
+  workplaceId?: string;
+};
+
+type AssignmentRequestDecisionPayload = {
+  decisionComment?: string;
+};
+
 /**
  * Описывает одну смену, которую сотрудник запросил в комментарии
  * (мы будем по этому массиву полностью пересобирать график).
@@ -50,6 +73,19 @@ type ParsedRequestedShift = {
   startsAt: Date;
   endsAt: Date;
   kind: ShiftKind;
+};
+
+/**
+ * Краткая статистика по назначениям для каждого сотрудника.
+ * Используем для:
+ *  - блока "Сотрудники без назначений"
+ *  - подсветки в модалке выбора сотрудника.
+ */
+type UserAssignmentsSummary = {
+  id: string;
+  fullName: string | null;
+  email: string;
+  assignmentsCount: number; // количество активных назначений
 };
 
 @Injectable()
@@ -971,6 +1007,65 @@ export class AssignmentsService {
     });
   }
 
+  /**
+   * 📊 Статистика по сотрудникам:
+   *  - все обычные сотрудники (USER, не system)
+   *  - количество активных назначений (status = ACTIVE, deletedAt = null)
+   *
+   * orgId передаём, если хотим ограничить одной организацией.
+   */
+  async getUsersAssignmentsSummary(
+    orgId?: string,
+  ): Promise<UserAssignmentsSummary[]> {
+    const userWhere: Prisma.UserWhereInput = {
+      isSystemUser: false,
+      role: UserRole.USER,
+    };
+
+    if (orgId) {
+      userWhere.orgId = orgId;
+    }
+
+    const [users, grouped] = await Promise.all([
+      this.prisma.user.findMany({
+        where: userWhere,
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+        },
+        orderBy: { fullName: 'asc' },
+      }),
+      this.prisma.assignment.groupBy({
+        by: ['userId'],
+        where: {
+          deletedAt: null,
+          status: AssignmentStatus.ACTIVE,
+          ...(orgId
+            ? {
+                user: {
+                  orgId,
+                },
+              }
+            : {}),
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const countMap = new Map<string, number>();
+    for (const row of grouped) {
+      countMap.set(row.userId, row._count._all);
+    }
+
+    return users.map((u) => ({
+      id: u.id,
+      fullName: u.fullName ?? null,
+      email: u.email,
+      assignmentsCount: countMap.get(u.id) ?? 0,
+    }));
+  }
+
   // ============================================================
   //      🔔 ЗАПРОСЫ НА КОРРЕКТИРОВКУ РАСПИСАНИЯ
   // ============================================================
@@ -1384,4 +1479,340 @@ export class AssignmentsService {
 
     return updatedAdjustment;
   }
+  // ================================================================
+  //        📨 БЛОК ЗАПРОСОВ НА НОВОЕ НАЗНАЧЕНИЕ (AssignmentRequest)
+  // ================================================================
+
+  private parseAssignmentRequestSlots(slots: unknown): ParsedRequestedShift[] {
+    const parsed: ParsedRequestedShift[] = [];
+
+    if (!slots) return parsed;
+
+    const asArray = Array.isArray(slots) ? slots : null;
+
+    // Вариант 1: массив { date, from, to, shiftKind/kind }
+    if (asArray) {
+      for (const item of asArray as any[]) {
+        if (!item) continue;
+
+        const dateRaw = item.date ?? item.day ?? item.dateStr;
+        const dateIso =
+          typeof dateRaw === 'string'
+            ? dateRaw
+            : dateRaw?.format?.('YYYY-MM-DD') ?? null;
+
+        // item может быть Dayjs/Date
+        const dateIsoFinal =
+          dateIso ||
+          (dateRaw instanceof Date
+            ? dateRaw.toISOString().slice(0, 10)
+            : null);
+
+        // интервалы внутри item.intervals
+        const intervals = Array.isArray(item.intervals) ? item.intervals : null;
+
+        if (dateIsoFinal && intervals) {
+          for (const iv of intervals) {
+            if (!iv) continue;
+            const fromStr =
+              typeof iv.from === 'string'
+                ? iv.from
+                : iv.from?.format?.('HH:mm');
+            const toStr =
+              typeof iv.to === 'string'
+                ? iv.to
+                : iv.to?.format?.('HH:mm');
+
+            const kindRaw = iv.shiftKind ?? iv.kind ?? item.shiftKind ?? item.kind;
+            const kind = this.safeShiftKind(kindRaw);
+
+            const built = this.buildShift(dateIsoFinal, fromStr, toStr, kind);
+            if (built) parsed.push(built);
+          }
+          continue;
+        }
+
+        const fromStr =
+          typeof item.from === 'string' ? item.from : item.from?.format?.('HH:mm');
+        const toStr =
+          typeof item.to === 'string' ? item.to : item.to?.format?.('HH:mm');
+        const kindRaw = item.shiftKind ?? item.kind;
+        const kind = this.safeShiftKind(kindRaw);
+
+        if (dateIsoFinal && (fromStr || kind === ShiftKind.DAY_OFF)) {
+          const built = this.buildShift(dateIsoFinal, fromStr, toStr, kind);
+          if (built) parsed.push(built);
+        }
+      }
+    }
+
+    return parsed;
+  }
+
+  private safeShiftKind(kindRaw: unknown): ShiftKind {
+    const k = String(kindRaw ?? '').toUpperCase();
+    if (k === 'DEFAULT') return ShiftKind.DEFAULT;
+    if (k === 'OFFICE') return ShiftKind.OFFICE;
+    if (k === 'REMOTE') return ShiftKind.REMOTE;
+    if (k === 'DAY_OFF') return ShiftKind.DAY_OFF;
+    return ShiftKind.DEFAULT;
+  }
+
+  private buildShift(
+    dateIso: string,
+    fromStr: string | undefined,
+    toStr: string | undefined,
+    kind: ShiftKind,
+  ): ParsedRequestedShift | null {
+    const date = this.parseDateOnly(dateIso);
+
+    // DAY_OFF — считаем как "весь день"
+    if (kind === ShiftKind.DAY_OFF) {
+      const startsAt = this.buildUtcFromLocalDateAndTime(dateIso, '00:00');
+      const endsAt = this.buildUtcFromLocalDateAndTime(dateIso, '23:59');
+      return { date, startsAt, endsAt, kind };
+    }
+
+    if (!fromStr || !toStr) return null;
+
+    const startsAt = this.buildUtcFromLocalDateAndTime(dateIso, fromStr);
+    const endsAt = this.buildUtcFromLocalDateAndTime(dateIso, toStr);
+
+    // защита от перевёрнутых интервалов
+    if (endsAt <= startsAt) return null;
+
+    return { date, startsAt, endsAt, kind };
+  }
+
+  private async resolveOrgIdForUser(userId: string): Promise<string> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { orgId: true },
+    });
+
+    if (!user?.orgId) {
+      throw new BadRequestException('У пользователя не задана организация');
+    }
+
+    return user.orgId;
+  }
+
+  /**
+   * 📝 Пользователь создаёт запрос на назначение (из MyPlace).
+   * orgId можно передать из токена, но если его нет — берём из пользователя.
+   */
+  async createAssignmentRequest(
+    requesterId: string,
+    payload: CreateAssignmentRequestPayload,
+    orgIdFromToken?: string,
+  ) {
+    const orgId = orgIdFromToken ?? (await this.resolveOrgIdForUser(requesterId));
+
+    const dateFrom =
+      payload.dateFrom instanceof Date ? payload.dateFrom : new Date(payload.dateFrom);
+    const dateTo =
+      payload.dateTo instanceof Date ? payload.dateTo : new Date(payload.dateTo);
+
+    if (Number.isNaN(dateFrom.getTime()) || Number.isNaN(dateTo.getTime())) {
+      throw new BadRequestException('Некорректные dateFrom/dateTo');
+    }
+
+    if (dateTo < dateFrom) {
+      throw new BadRequestException('dateTo не может быть меньше dateFrom');
+    }
+
+    const workplaceId = payload.workplaceId ?? null;
+
+    if (workplaceId) {
+      const wp = await this.prisma.workplace.findUnique({
+        where: { id: workplaceId },
+        select: { id: true, orgId: true, isActive: true },
+      });
+
+      if (!wp) throw new NotFoundException('Workplace not found');
+      if (wp.orgId !== orgId) {
+        throw new BadRequestException('Workplace не принадлежит организации пользователя');
+      }
+      if (!wp.isActive) {
+        throw new BadRequestException('Workplace не активен');
+      }
+    }
+
+    return this.prisma.assignmentRequest.create({
+      data: {
+        orgId,
+        requesterId,
+        workplaceId,
+        dateFrom,
+        dateTo,
+        // Json обязателен — даже если фронт пока присылает только comment
+        slots: (payload.slots ?? []) as Prisma.InputJsonValue,
+        comment: payload.comment ?? null,
+        status: AssignmentRequestStatus.PENDING,
+      },
+      include: {
+        requester: {
+          select: { id: true, fullName: true, email: true, position: true },
+        },
+        workplace: { select: { id: true, code: true, name: true } },
+        decidedBy: { select: { id: true, fullName: true, email: true } },
+        assignment: { select: { id: true, startsAt: true, endsAt: true } },
+      },
+    });
+  }
+
+  /**
+   * 📋 Список запросов на назначение (для админа/менеджера).
+   */
+  async listAssignmentRequests(
+    params: ListAssignmentRequestsParams,
+    orgIdFromToken?: string,
+    currentUserId?: string,
+  ) {
+    const orgId =
+      orgIdFromToken ??
+      (currentUserId ? await this.resolveOrgIdForUser(currentUserId) : null);
+
+    if (!orgId) {
+      throw new BadRequestException('orgId не найден (нет orgId в токене и нет currentUserId)');
+    }
+
+    const page = params.page ?? 1;
+    const pageSize = params.pageSize ?? 20;
+
+    const where: Prisma.AssignmentRequestWhereInput = {
+      orgId,
+      ...(params.status ? { status: params.status } : {}),
+      ...(params.requesterId ? { requesterId: params.requesterId } : {}),
+      ...(params.workplaceId ? { workplaceId: params.workplaceId } : {}),
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.assignmentRequest.findMany({
+        where,
+        include: {
+          requester: {
+            select: { id: true, fullName: true, email: true, position: true },
+          },
+          workplace: { select: { id: true, code: true, name: true } },
+          decidedBy: { select: { id: true, fullName: true, email: true } },
+          assignment: { select: { id: true, startsAt: true, endsAt: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.assignmentRequest.count({ where }),
+    ]);
+
+    return {
+      data: items,
+      meta: { total, page, pageSize },
+    };
+  }
+
+  /**
+   * ✅/❌ Решение по запросу на назначение.
+   * Если APPROVED — создаём назначение и привязываем его к запросу.
+   */
+  async decideAssignmentRequest(
+    requestId: string,
+    decision: ApproveOrReject,
+    payload: AssignmentRequestDecisionPayload,
+    decidedById?: string,
+  ) {
+    const req = await this.prisma.assignmentRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        requester: { select: { id: true, orgId: true, fullName: true } },
+      },
+    });
+
+    if (!req) throw new NotFoundException('AssignmentRequest not found');
+
+    if (req.status !== AssignmentRequestStatus.PENDING) {
+      throw new BadRequestException('Запрос уже обработан');
+    }
+
+    if (decision === 'REJECTED') {
+      return this.prisma.assignmentRequest.update({
+        where: { id: requestId },
+        data: {
+          status: AssignmentRequestStatus.REJECTED,
+          decidedById: decidedById ?? null,
+          decidedAt: new Date(),
+          decisionComment: payload.decisionComment ?? null,
+        },
+        include: {
+          requester: {
+            select: { id: true, fullName: true, email: true, position: true },
+          },
+          workplace: { select: { id: true, code: true, name: true } },
+          decidedBy: { select: { id: true, fullName: true, email: true } },
+          assignment: { select: { id: true, startsAt: true, endsAt: true } },
+        },
+      });
+    }
+
+    // APPROVED
+    if (!req.workplaceId) {
+      throw new BadRequestException(
+        'Нельзя одобрить запрос без выбранного workplaceId',
+      );
+    }
+
+    // 1) пробуем разобрать slots (если фронт прислал structured)
+    let requestedShifts = this.parseAssignmentRequestSlots(req.slots);
+
+    // 2) если slots пустые — парсим из comment (как сейчас делает MyPlace)
+    if (requestedShifts.length === 0 && req.comment) {
+      requestedShifts = this.parseRequestedScheduleFromComment(req.comment);
+    }
+
+    if (requestedShifts.length === 0) {
+      throw new BadRequestException(
+        'Не удалось получить интервалы из запроса (slots/comment пустые)',
+      );
+    }
+
+    // создаём назначение через существующий create (там уже есть проверки + нотификации)
+    const createdAssignment = await this.create({
+      userId: req.requesterId,
+      workplaceId: req.workplaceId,
+      startsAt: req.dateFrom,
+      endsAt: req.dateTo,
+      shifts: requestedShifts.map((s) => ({
+        date: s.date,
+        startsAt: s.startsAt,
+        endsAt: s.endsAt,
+        kind: s.kind,
+      })),
+    } as any);
+
+    if (!createdAssignment) {
+      throw new BadRequestException('Не удалось создать назначение по запросу');
+    }
+
+    return this.prisma.assignmentRequest.update({
+      where: { id: requestId },
+      data: {
+        status: AssignmentRequestStatus.APPROVED,
+        decidedById: decidedById ?? null,
+        decidedAt: new Date(),
+        decisionComment: payload.decisionComment ?? null,
+        assignmentId: createdAssignment.id,
+      },
+      include: {
+        requester: {
+          select: { id: true, fullName: true, email: true, position: true },
+        },
+        workplace: { select: { id: true, code: true, name: true } },
+        decidedBy: { select: { id: true, fullName: true, email: true } },
+        assignment: { select: { id: true, startsAt: true, endsAt: true } },
+      },
+    });
+
+
+  }
+
 }

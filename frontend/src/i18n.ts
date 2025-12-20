@@ -6,7 +6,7 @@ void i18n.use(initReactI18next).init({
     ru: {
       translation: {
         login: {
-          title: 'Вход в Armico',
+          title: 'Вход в Grant Thornton',
           email: 'Электронная почта',
           password: 'Пароль',
           submit: 'Войти',

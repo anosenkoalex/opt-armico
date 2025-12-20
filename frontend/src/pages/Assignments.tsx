@@ -6,6 +6,7 @@ import {
   DatePicker,
   Divider,
   Form,
+  Input,
   Modal,
   Result,
   Select,
@@ -34,6 +35,11 @@ import {
   ScheduleAdjustment,
   User,
   Workplace,
+  AssignmentRequest,
+  AssignmentRequestStatus,
+  approveAssignmentRequest,
+  fetchAssignmentRequests,
+  rejectAssignmentRequest,
   approveScheduleAdjustment,
   completeAssignment,
   createAssignment,
@@ -54,7 +60,6 @@ import { useNavigate } from 'react-router-dom';
 
 const statusOptions: AssignmentStatus[] = ['ACTIVE', 'ARCHIVED'];
 
-// Ответ бэка может быть старый (data/meta) или новый (items/total)
 type AssignmentsQueryResult =
   | PaginatedResponse<Assignment>
   | {
@@ -64,7 +69,6 @@ type AssignmentsQueryResult =
       pageSize: number;
     };
 
-// локальный тип для вида смены (совпадает с enum ShiftKind в Prisma)
 type ShiftKindType = 'DEFAULT' | 'OFFICE' | 'REMOTE' | 'DAY_OFF';
 
 type ShiftRow = {
@@ -75,14 +79,12 @@ type ShiftRow = {
   kind: ShiftKindType;
 };
 
-// смена, распарсенная из комментария сотрудника (для "стало")
 type ProposedShift = {
-  startsAt: string; // HH:mm
-  endsAt: string; // HH:mm
+  startsAt: string;
+  endsAt: string;
   kindLabel: string | null;
 };
 
-// сортируем смены по дате и времени начала, чтобы все даты шли подряд
 const sortShiftRows = (rows: ShiftRow[]): ShiftRow[] => {
   return [...rows].sort((a, b) => {
     if (a.date.isBefore(b.date, 'day')) return -1;
@@ -100,7 +102,6 @@ const sortShiftRows = (rows: ShiftRow[]): ShiftRow[] => {
   });
 };
 
-// 🔧 helper: короткие русские месяцы
 const RU_MONTHS_SHORT = [
   'янв',
   'фев',
@@ -116,7 +117,6 @@ const RU_MONTHS_SHORT = [
   'дек',
 ];
 
-// 🔧 helper: сформировать CSV по сменам: даты — в заголовках
 const buildAssignmentsCsv = (rows: Assignment[]): string => {
   const dateSet = new Set<string>();
 
@@ -225,7 +225,6 @@ const buildAssignmentsCsv = (rows: Assignment[]): string => {
   return [header.join(';'), ...lines].join('\r\n');
 };
 
-// 🔧 helper: скачать CSV как файл (с UTF-8 BOM для Excel)
 const downloadCsv = (rows: Assignment[], prefix: string) => {
   if (!rows.length) {
     throw new Error('NO_ROWS');
@@ -281,6 +280,16 @@ const AssignmentsPage = () => {
   const [adjustmentsModalAssignment, setAdjustmentsModalAssignment] =
     useState<Assignment | null>(null);
 
+
+  const [isAssignmentRequestsModalOpen, setIsAssignmentRequestsModalOpen] =
+    useState(false);
+  const [currentAssignmentRequestIndex, setCurrentAssignmentRequestIndex] =
+    useState(0);
+  const [approveRequest, setApproveRequest] =
+    useState<AssignmentRequest | null>(null);
+  // 🔹 модалка со свободными сотрудниками
+  const [isFreeUsersModalOpen, setIsFreeUsersModalOpen] = useState(false);
+
   const isAdmin = user?.role === 'SUPER_ADMIN';
   const isManager = user?.role === 'MANAGER';
   const canManageAssignments = isAdmin || isManager;
@@ -319,6 +328,19 @@ const AssignmentsPage = () => {
     enabled: canManageAssignments,
   });
 
+  // 🔢 все активные назначения (для подсчёта по сотрудникам)
+  const assignmentsAllActiveQuery = useQuery<AssignmentsQueryResult>({
+    queryKey: ['assignments', 'all-active'],
+    queryFn: () =>
+      fetchAssignments({
+        status: 'ACTIVE',
+        page: 1,
+        pageSize: 100, // бэковый лимит
+      }),
+    enabled: canManageAssignments && !showTrash,
+    staleTime: 60_000,
+  });
+
   const usersQuery = useQuery<PaginatedResponse<User>>({
     queryKey: ['users', 'for-assignments'],
     queryFn: () =>
@@ -336,7 +358,6 @@ const AssignmentsPage = () => {
     enabled: canManageAssignments,
   });
 
-  // 🔍 тянем только PENDING-запросы корректировок
   const scheduleAdjustmentsQuery = useQuery({
     queryKey: ['schedule-adjustments', 'for-assignments', 'PENDING'],
     queryFn: () =>
@@ -349,20 +370,30 @@ const AssignmentsPage = () => {
     staleTime: 30_000,
   });
 
-  // универсально достаём список запросов: data или items
-  const adjustments: ScheduleAdjustment[] = useMemo(() => {
+  
+  const assignmentRequestsQuery = useQuery({
+    queryKey: ['assignment-requests', 'for-assignments', 'PENDING'],
+    queryFn: () =>
+      fetchAssignmentRequests({
+        page: 1,
+        pageSize: 50,
+        status: 'PENDING',
+      }),
+    enabled: canManageAssignments,
+    staleTime: 30_000,
+  });
+
+const adjustments: ScheduleAdjustment[] = useMemo(() => {
     const raw: any = scheduleAdjustmentsQuery.data;
     if (!raw) return [];
     return (raw.items ?? raw.data ?? []) as ScheduleAdjustment[];
   }, [scheduleAdjustmentsQuery.data]);
 
-  // только PENDING-запросы (для индикатора и подсветки)
   const pendingAdjustments: ScheduleAdjustment[] = useMemo(
     () => adjustments.filter((a) => a.status === 'PENDING'),
     [adjustments],
   );
 
-  // количество PENDING-запросов для индикатора
   const adjustmentsCount = useMemo(() => {
     const raw: any = scheduleAdjustmentsQuery.data;
     const base = pendingAdjustments.length;
@@ -370,13 +401,27 @@ const AssignmentsPage = () => {
     return typeof metaTotal === 'number' ? metaTotal : base;
   }, [scheduleAdjustmentsQuery.data, pendingAdjustments]);
 
-  // для подсветки назначений с PENDING-запросами
-  const assignmentsWithAdjustment = useMemo(() => {
+  
+  const [locallyProcessedAssignmentRequestIds, setLocallyProcessedAssignmentRequestIds] =
+    useState<string[]>([]);
+
+  const rawAssignmentRequests: AssignmentRequest[] =
+    (assignmentRequestsQuery.data?.data as AssignmentRequest[] | undefined) ?? [];
+
+  const pendingAssignmentRequests = useMemo(
+    () =>
+      rawAssignmentRequests.filter(
+        (r) => !locallyProcessedAssignmentRequestIds.includes(r.id),
+      ),
+    [rawAssignmentRequests, locallyProcessedAssignmentRequestIds],
+  );
+
+  const pendingAssignmentRequestsCount = pendingAssignmentRequests.length;
+
+const assignmentsWithAdjustment = useMemo(() => {
     const set = new Set<string>();
     pendingAdjustments.forEach((adj) => {
-      if (adj.assignmentId) {
-        set.add(adj.assignmentId);
-      }
+      if (adj.assignmentId) set.add(adj.assignmentId);
     });
     return set;
   }, [pendingAdjustments]);
@@ -588,6 +633,463 @@ const AssignmentsPage = () => {
     },
   });
 
+
+
+  const handleAssignmentRequestProcessed = (id: string) => {
+    // Локально убираем запрос из списка, чтобы он сразу пропадал из UI
+    setLocallyProcessedAssignmentRequestIds((prev) =>
+      prev.includes(id) ? prev : [...prev, id],
+    );
+
+    // Подправляем индекс текущего запроса относительно нового количества
+    setCurrentAssignmentRequestIndex((prevIndex) => {
+      const total = pendingAssignmentRequests.length;
+      const nextTotal = Math.max(0, total - 1);
+
+      if (nextTotal === 0) {
+        setIsAssignmentRequestsModalOpen(false);
+        return 0;
+      }
+
+      if (prevIndex >= nextTotal) {
+        return Math.max(0, nextTotal - 1);
+      }
+
+      return prevIndex;
+    });
+  };
+  const approveAssignmentRequestMutation = useMutation({
+    mutationFn: (payload: { id: string; decisionComment?: string }) =>
+      approveAssignmentRequest(payload.id, {
+        decisionComment: payload.decisionComment,
+      }),
+    onSuccess: (_data, variables) => {
+      handleAssignmentRequestProcessed(variables.id);
+      queryInvalidateAll();
+      message.success(
+        t('assignments.requestApproved', 'Запрос на назначение одобрен'),
+      );
+    },
+    onError: (error: unknown, variables) => {
+      const axiosError = error as AxiosError<{ message?: string | string[] }>;
+      const msg = axiosError?.response?.data?.message;
+
+      if (typeof msg === 'string') {
+        const normalized = msg.toLowerCase();
+
+        if (
+          normalized.includes('уже обработан') ||
+          normalized.includes('already processed')
+        ) {
+          // Бэк говорит, что запрос уже обработан — локально тоже его убираем
+          if (variables?.id) {
+            handleAssignmentRequestProcessed(variables.id);
+            queryInvalidateAll();
+          }
+          message.info(msg);
+          return;
+        }
+      }
+
+      handleAssignmentError(error);
+    },
+  });
+
+  const rejectAssignmentRequestMutation = useMutation({
+    mutationFn: (payload: { id: string; decisionComment?: string }) =>
+      rejectAssignmentRequest(payload.id, {
+        decisionComment: payload.decisionComment,
+      }),
+    onSuccess: (_data, variables) => {
+      handleAssignmentRequestProcessed(variables.id);
+      queryInvalidateAll();
+      message.success(
+        t('assignments.requestRejected', 'Запрос на назначение отклонён'),
+      );
+    },
+    onError: (error: unknown, variables) => {
+      const axiosError = error as AxiosError<{ message?: string | string[] }>;
+      const msg = axiosError?.response?.data?.message;
+
+      if (typeof msg === 'string') {
+        const normalized = msg.toLowerCase();
+
+        if (
+          normalized.includes('уже обработан') ||
+          normalized.includes('already processed')
+        ) {
+          if (variables?.id) {
+            handleAssignmentRequestProcessed(variables.id);
+            queryInvalidateAll();
+          }
+          message.info(msg);
+          return;
+        }
+      }
+
+      handleAssignmentError(error);
+    },
+  });
+
+  const mapKindLabelToKind = (label?: string | null): ShiftKindType => {
+    if (!label) return 'DEFAULT';
+    const v = label.trim().toLowerCase();
+
+    // Русские подписи из UI/комментариев
+    if (v.includes('офис')) return 'OFFICE';
+    if (v.includes('удал') || v.includes('remote')) return 'REMOTE';
+    if (v.includes('day off') || v.includes('выход') || v.includes('больнич')) {
+      return 'DAY_OFF';
+    }
+
+    // Если кто-то прислал уже enum-значение
+    if (v === 'office') return 'OFFICE';
+    if (v === 'remote') return 'REMOTE';
+    if (v === 'day_off') return 'DAY_OFF';
+    if (v === 'default') return 'DEFAULT';
+
+    return 'DEFAULT';
+  };
+
+  const parseAssignmentRequestIntervalsFromComment = (
+    comment?: string | null,
+  ): Record<string, ProposedShift[]> => {
+    const result: Record<string, ProposedShift[]> = {};
+    if (!comment) return result;
+
+    // Поддержка формата с маркером (как в корректировках)
+    const marker = 'Интервалы, которые сотрудник предлагает:';
+    const markerIdx = comment.indexOf(marker);
+
+    const slice = markerIdx >= 0 ? comment.slice(markerIdx + marker.length) : comment;
+
+    const lines = slice
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const re =
+      /^(\d{2}\.\d{2}\.\d{4}):\s+(\d{2}:\d{2})\s*→\s*(\d{2}:\d{2})(?:\s*\((.+)\))?$/;
+
+    lines.forEach((line) => {
+      const match = line.match(re);
+      if (!match) return;
+
+      const [, dateStr, startStr, endStr, kindLabel] = match;
+      const [dayStr, monthStr, yearStr] = dateStr.split('.');
+      const dateKey = dayjs(
+        `${yearStr}-${monthStr}-${dayStr}`,
+        'YYYY-MM-DD',
+      ).format('YYYY-MM-DD');
+
+      if (!result[dateKey]) result[dateKey] = [];
+      result[dateKey].push({
+        startsAt: startStr,
+        endsAt: endStr,
+        kindLabel: kindLabel ?? null,
+      });
+    });
+
+    return result;
+  };
+
+  const openApproveAssignmentRequest = (r: AssignmentRequest) => {
+    setApproveRequest(r);
+    setEditingAssignment(null);
+
+    // закрываем модалку со списком запросов, чтобы была одна логика/один UI
+    setIsAssignmentRequestsModalOpen(false);
+
+    form.resetFields();
+    setShiftRows([]);
+    setTimeRangeForAll(null);
+    setApplyTimeToAll(true);
+
+    const startDate = dayjs(r.dateFrom).startOf('day');
+    const endDate = dayjs(r.dateTo).startOf('day');
+
+    const userIdFromRequest =
+      r.requesterId ??
+      r.userId ??
+      (r.requester && 'id' in r.requester ? r.requester.id : undefined) ??
+      (r.user && 'id' in r.user ? r.user.id : undefined);
+
+    form.setFieldsValue({
+      userId: userIdFromRequest,
+      workplaceId: r.workplaceId,
+      status: 'ACTIVE',
+      dateRange: [startDate, endDate],
+    });
+
+    const parsedByDate = parseAssignmentRequestIntervalsFromComment(r.comment);
+
+    const rows: ShiftRow[] = [];
+    let current = startDate.clone();
+    while (current.isBefore(endDate) || current.isSame(endDate, 'day')) {
+      const dateKey = current.format('YYYY-MM-DD');
+      const list = parsedByDate[dateKey] ?? [];
+
+      if (list.length) {
+        list.forEach((it, idx) => {
+          const [sh, sm] = it.startsAt.split(':').map((x) => Number(x));
+          const [eh, em] = it.endsAt.split(':').map((x) => Number(x));
+          const st = dayjs().hour(sh).minute(sm).second(0).millisecond(0);
+          const en = dayjs().hour(eh).minute(em).second(0).millisecond(0);
+
+          rows.push({
+            key: `${r.id}-${dateKey}-${idx}`,
+            date: current.clone(),
+            startTime: st,
+            endTime: en,
+            kind: mapKindLabelToKind(it.kindLabel),
+          });
+        });
+      } else {
+        rows.push({
+          key: `${r.id}-${dateKey}`,
+          date: current.clone(),
+          startTime: null,
+          endTime: null,
+          kind: 'DEFAULT',
+        });
+      }
+
+      current = current.add(1, 'day');
+    }
+
+    setShiftRows(sortShiftRows(rows));
+    setIsModalOpen(true);
+  };
+
+
+  const renderAssignmentRequestsContent = () => {
+    if (assignmentRequestsQuery.isLoading && !pendingAssignmentRequests.length) {
+      return (
+        <Result
+          status="info"
+          title={t('common.loading', 'Загрузка...')}
+        />
+      );
+    }
+
+    if (!pendingAssignmentRequests.length) {
+      return (
+        <Result
+          status="info"
+          title={t('assignments.noRequests', 'Запросов нет')}
+        />
+      );
+    }
+
+    const total = pendingAssignmentRequests.length;
+    const safeIndex =
+      currentAssignmentRequestIndex < 0
+        ? 0
+        : currentAssignmentRequestIndex >= total
+        ? total - 1
+        : currentAssignmentRequestIndex;
+
+    const request = pendingAssignmentRequests[safeIndex];
+
+    const requesterUser = (request as any).requester as User | undefined;
+    const legacyUserFromRequest = (request as any).user as User | undefined;
+
+    const userIdFromRequest =
+      (request as any).requesterId ??
+      (request as any).userId ??
+      requesterUser?.id ??
+      legacyUserFromRequest?.id ??
+      null;
+
+    const userFromUsers =
+      userIdFromRequest && userById[userIdFromRequest]
+        ? userById[userIdFromRequest]
+        : undefined;
+
+    const userForDisplay = requesterUser || legacyUserFromRequest || userFromUsers;
+
+    const userLabel =
+      (typeof userForDisplay?.fullName === 'string' &&
+        userForDisplay.fullName.trim()) ||
+      (typeof userForDisplay?.email === 'string' &&
+        userForDisplay.email.trim()) ||
+      (userIdFromRequest ?? '') ||
+      t('assignments.user', 'Сотрудник');
+
+    const workplaceLabel = request.workplace
+      ? `${request.workplace.code ? `${request.workplace.code} — ` : ''}${request.workplace.name}`
+      : t('assignments.workplace', 'Рабочее место');
+
+    const dateFrom = dayjs(request.dateFrom);
+    const dateTo = dayjs(request.dateTo);
+
+    const intervalsByDate =
+      parseAssignmentRequestIntervalsFromComment(request.comment);
+
+    const dateKeys = Object.keys(intervalsByDate).sort();
+
+    const handlePrev = () => {
+      if (total <= 1) return;
+      setCurrentAssignmentRequestIndex(
+        safeIndex === 0 ? total - 1 : safeIndex - 1,
+      );
+    };
+
+    const handleNext = () => {
+      if (total <= 1) return;
+      setCurrentAssignmentRequestIndex(
+        safeIndex === total - 1 ? 0 : safeIndex + 1,
+      );
+    };
+
+    const handleApprove = () => {
+      openApproveAssignmentRequest(request);
+    };
+
+    const handleReject = () => {
+      Modal.confirm({
+        title: t(
+          'assignments.requestRejectConfirmTitle',
+          'Отклонить запрос на назначение?',
+        ),
+        content: t(
+          'assignments.requestRejectConfirmContent',
+          'Запрос будет отклонён без создания назначения.',
+        ),
+        okText: t('common.reject', 'Отказать'),
+        cancelText: t('common.cancel', 'Отмена'),
+        centered: true,
+        onOk: () =>
+          rejectAssignmentRequestMutation
+            .mutateAsync({ id: request.id })
+            .catch(() => undefined),
+      });
+    };
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            marginBottom: 8,
+          }}
+        >
+          <Typography.Text>
+            {t('assignments.requestCounter', 'Запрос {{current}} из {{total}}', {
+              current: safeIndex + 1,
+              total,
+            })}
+          </Typography.Text>
+        </div>
+
+        <Card size="small" bordered>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div>
+              <Typography.Text type="secondary">
+                {t('assignments.user', 'Сотрудник')}:
+              </Typography.Text>
+              <br />
+              <Typography.Text strong>{userLabel}</Typography.Text>
+            </div>
+
+            <div>
+              <Typography.Text type="secondary">
+                {t('assignments.workplace', 'Рабочее место')}:
+              </Typography.Text>
+              <br />
+              <Typography.Text strong>{workplaceLabel}</Typography.Text>
+            </div>
+
+            <div>
+              <Typography.Text type="secondary">
+                {t('assignments.period', 'Период')}:
+              </Typography.Text>
+              <br />
+              <Typography.Text strong>
+                {dateFrom.format('DD.MM.YYYY')} – {dateTo.format('DD.MM.YYYY')}
+              </Typography.Text>
+            </div>
+
+            <div>
+              <Typography.Text type="secondary">
+                {t('assignments.intervals', 'Интервалы')}:
+              </Typography.Text>
+              <br />
+              {dateKeys.length === 0 && (
+                <Typography.Text>—</Typography.Text>
+              )}
+              <Space
+                direction="vertical"
+                size={4}
+                style={{ marginTop: 4, width: '100%' }}
+              >
+                {dateKeys.map((dateKey) => {
+                  const date = dayjs(dateKey, 'YYYY-MM-DD');
+                  const list = intervalsByDate[dateKey] ?? [];
+                  return (
+                    <div key={dateKey}>
+                      <Typography.Text strong>
+                        {date.format('DD.MM.YYYY')}
+                      </Typography.Text>
+                      <br />
+                      {list.length === 0 ? (
+                        <Typography.Text>—</Typography.Text>
+                      ) : (
+                        list.map((it, idx) => (
+                          <Typography.Text key={idx}>
+                            {it.startsAt} – {it.endsAt}
+                            {it.kindLabel ? ` (${it.kindLabel})` : ''}
+                            {idx < list.length - 1 ? ', ' : ''}
+                          </Typography.Text>
+                        ))
+                      )}
+                    </div>
+                  );
+                })}
+              </Space>
+            </div>
+
+          </Space>
+        </Card>
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            marginTop: 16,
+          }}
+        >
+          <Space>
+            {total > 1 && (
+              <Button onClick={handlePrev}>
+                ◀
+              </Button>
+            )}
+          </Space>
+
+          <Space>
+            <Button type="primary" onClick={handleApprove}>
+              {t('common.approve', 'Одобрить')}
+            </Button>
+            <Button danger onClick={handleReject}>
+              {t('common.reject', 'Отказать')}
+            </Button>
+          </Space>
+
+          <Space>
+            {total > 1 && (
+              <Button onClick={handleNext}>
+                ▶
+              </Button>
+            )}
+          </Space>
+        </div>
+      </div>
+    );
+  };
+
+
   const assignments = useMemo(() => {
     const raw = assignmentsQuery.data as any;
     if (!raw) return [];
@@ -611,11 +1113,24 @@ const AssignmentsPage = () => {
     };
   }, [assignmentsQuery.data, page, pageSize]);
 
+  const allActiveAssignments: Assignment[] = useMemo(() => {
+    const raw = assignmentsAllActiveQuery.data as any;
+    if (!raw) return [];
+    return raw.data ?? raw.items ?? [];
+  }, [assignmentsAllActiveQuery.data]);
+
+  const assignmentsCountByUser: Record<string, number> = useMemo(() => {
+    const map: Record<string, number> = {};
+    allActiveAssignments.forEach((a) => {
+      if (!a.userId) return;
+      map[a.userId] = (map[a.userId] ?? 0) + 1;
+    });
+    return map;
+  }, [allActiveAssignments]);
+
   const handleOpenEdit = useCallback(
     (record: Assignment) => {
-      if (showTrash) {
-        return;
-      }
+      if (showTrash) return;
 
       setEditingAssignment(record);
       form.resetFields();
@@ -1123,7 +1638,20 @@ const AssignmentsPage = () => {
         shifts,
       };
 
-      if (editingAssignment) {
+            // ✅ Режим одобрения запроса на назначение:
+      // 1) создаём Assignment
+      // 2) помечаем запрос как APPROVED
+      if (approveRequest) {
+        payload.status = 'ACTIVE';
+        await createMutation.mutateAsync(payload);
+        await approveAssignmentRequestMutation.mutateAsync({
+          id: approveRequest.id,
+        });
+        setApproveRequest(null);
+        return;
+      }
+
+if (editingAssignment) {
         await updateMutation.mutateAsync({
           id: editingAssignment.id,
           values: payload,
@@ -1142,13 +1670,66 @@ const AssignmentsPage = () => {
     return <Result status="403" title={t('admin.accessDenied')} />;
   }
 
+  const allUsers: User[] = usersQuery.data?.data ?? [];
+
+  const userById: Record<string, User> = useMemo(() => {
+    const map: Record<string, User> = {};
+    (allUsers || []).forEach((u) => {
+      if (u && u.id) {
+        map[u.id] = u;
+      }
+    });
+    return map;
+  }, [allUsers]);
+
+  const usersWithoutActiveAssignments: User[] = useMemo(
+    () =>
+      allUsers.filter(
+        (u) => u.role === 'USER' && (assignmentsCountByUser[u.id] ?? 0) === 0,
+      ),
+    [allUsers, assignmentsCountByUser],
+  );
+
   const userOptions =
-    usersQuery.data?.data
+    allUsers
       .filter((u) => u.role === 'USER')
-      .map((item) => ({
-        value: item.id,
-        label: `${item.fullName ?? item.email} (${item.email})`,
-      })) ?? [];
+      .map((item) => {
+        const count = assignmentsCountByUser[item.id] ?? 0;
+        const baseLabel = `${item.fullName ?? item.email} (${item.email})`;
+
+        return {
+          value: item.id,
+          label: (
+            <span
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                width: '100%',
+              }}
+            >
+              <span
+                style={{
+                  color: count === 0 ? '#389e0d' : 'inherit',
+                }}
+              >
+                {baseLabel}
+              </span>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: count === 0 ? '#389e0d' : '#999',
+                  marginLeft: 8,
+                }}
+              >
+                {count === 0
+                  ? 'нет активных назначений'
+                  : `${count} активн.`}
+              </span>
+            </span>
+          ),
+          searchLabel: baseLabel,
+        };
+      }) ?? [];
 
   const workplaceOptions =
     workplacesQuery.data?.data.map((item) => ({
@@ -1319,7 +1900,6 @@ const AssignmentsPage = () => {
         : t('dashboard.openEnded')
     }`;
 
-  // Оригинальные смены назначения по датам — для «Назначенный график (было)»
   const originalShiftsByDate = useMemo(() => {
     const map: Record<string, AssignmentShift[]> = {};
     if (!adjustmentsModalAssignment?.shifts) return map;
@@ -1333,7 +1913,6 @@ const AssignmentsPage = () => {
     return map;
   }, [adjustmentsModalAssignment]);
 
-  // парсим комментарий сотрудника и получаем полный предложенный график
   const parseRequestedScheduleFromComment = (
     comment?: string | null,
   ): Record<string, ProposedShift[]> => {
@@ -1375,16 +1954,26 @@ const AssignmentsPage = () => {
     return result;
   };
 
-  // предложенный график по датам — из комментария
+  // 🔧 ОБНОВЛЁННЫЙ БЛОК: собираем интервалы из всех запросов по этому назначению
   const proposedShiftsByDate = useMemo(() => {
-    const anyWithComment = adjustmentsForModal.find(
-      (adj) => adj.comment && adj.comment.trim(),
-    );
-    if (!anyWithComment) return {};
-    return parseRequestedScheduleFromComment(anyWithComment.comment);
+    const merged: Record<string, ProposedShift[]> = {};
+
+    adjustmentsForModal.forEach((adj) => {
+      if (!adj.comment || !adj.comment.trim()) return;
+
+      const parsed = parseRequestedScheduleFromComment(adj.comment);
+
+      Object.entries(parsed).forEach(([dateKey, shifts]) => {
+        if (!merged[dateKey]) {
+          merged[dateKey] = [];
+        }
+        merged[dateKey].push(...shifts);
+      });
+    });
+
+    return merged;
   }, [adjustmentsForModal]);
 
-  // Список всех дат, которые нужно показывать в было/стало
   const datesForComparison = useMemo(() => {
     const set = new Set<string>();
 
@@ -1413,7 +2002,6 @@ const AssignmentsPage = () => {
   const formatTime = (iso: string | null | undefined) =>
     iso ? dayjs(iso).format('HH:mm') : '--:--';
 
-  // Резюме изменений для блока "Комментарии сотрудника"
   const changesSummaryByDate = useMemo(() => {
     const result: { dateKey: string; text: string }[] = [];
 
@@ -1421,9 +2009,7 @@ const AssignmentsPage = () => {
       const orig = originalShiftsByDate[dateKey] ?? [];
       const next = proposedShiftsByDate[dateKey] ?? [];
 
-      if (!orig.length && !next.length) {
-        return;
-      }
+      if (!orig.length && !next.length) return;
 
       const origTimes = new Set(
         orig.map(
@@ -1440,7 +2026,8 @@ const AssignmentsPage = () => {
         [...origTimes].every((v) => nextTimes.has(v));
 
       const origKinds = new Set(
-        orig.map((s) => (s.kind ?? 'DEFAULT').toString()),
+        orig.map((s) => (s.kind ?? 'DEFAULT').toString(),
+        ),
       );
       const nextKinds = new Set(
         next.length
@@ -1454,9 +2041,7 @@ const AssignmentsPage = () => {
         origKinds.size === nextKinds.size &&
         [...origKinds].every((v) => nextKinds.has(v));
 
-      if (sameTimes && sameKinds) {
-        return;
-      }
+      if (sameTimes && sameKinds) return;
 
       const dateLabel = dayjs(dateKey).format('DD.MM.YYYY');
       const parts: string[] = [];
@@ -1504,7 +2089,23 @@ const AssignmentsPage = () => {
             {t('assignments.viewTrash', 'Корзина')}
           </Button>
 
-          {/* 🔔 кнопка перехода на /schedule-adjustments с индикатором количества */}
+          <Badge
+            count={pendingAssignmentRequestsCount}
+            size="small"
+            overflowCount={99}
+            offset={[8, 0]}
+          >
+            <Button
+              type="default"
+              onClick={() => {
+                setCurrentAssignmentRequestIndex(0);
+                setIsAssignmentRequestsModalOpen(true);
+              }}
+            >
+              {t('assignments.assignmentRequests', 'Запросы на назначение')}
+            </Button>
+          </Badge>
+
           <Badge
             count={adjustmentsCount}
             size="small"
@@ -1582,58 +2183,93 @@ const AssignmentsPage = () => {
         </Space>
       }
     >
-      <Form
-        layout="inline"
-        className="mb-4"
-        onValuesChange={(_changedValues, allValues) => {
-          setFilters({
-            userId: allValues.userId,
-            workplaceId: allValues.workplaceId,
-            status: allValues.status,
-            range: allValues.range,
-          });
-          setPage(1);
+      {/* Фильтры + индикатор свободных сотрудников */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-end',
+          marginBottom: 16,
+          gap: 16,
+          flexWrap: 'wrap',
         }}
       >
-        <Form.Item name="userId" label={t('assignments.user')}>
-          <Select
-            allowClear
-            showSearch
-            options={userOptions}
-            placeholder={t('assignments.filters.user')}
-            loading={usersQuery.isLoading}
-            optionFilterProp="label"
-            style={{ width: 240 }}
-          />
-        </Form.Item>
-        <Form.Item name="workplaceId" label={t('assignments.workplace')}>
-          <Select
-            allowClear
-            showSearch
-            options={workplaceOptions}
-            placeholder={t('assignments.filters.workplace')}
-            loading={workplacesQuery.isLoading}
-            optionFilterProp="label"
-            style={{ width: 260 }}
-          />
-        </Form.Item>
-        <Form.Item name="status" label={t('assignments.status.title')}>
-          <Select
-            allowClear
-            options={statusOptions.map((value) => ({
-              value,
-              label:
-                value === 'ACTIVE'
-                  ? t('assignments.status.active')
-                  : t('assignments.status.archived'),
-            }))}
-            style={{ width: 180 }}
-          />
-        </Form.Item>
-        <Form.Item name="range" label={t('assignments.filters.period')}>
-          <DatePicker.RangePicker showTime format="DD.MM.YYYY HH:mm" />
-        </Form.Item>
-      </Form>
+        <Form
+          layout="inline"
+          onValuesChange={(_changedValues, allValues) => {
+            setFilters({
+              userId: allValues.userId,
+              workplaceId: allValues.workplaceId,
+              status: allValues.status,
+              range: allValues.range,
+            });
+            setPage(1);
+          }}
+        >
+          <Form.Item name="userId" label={t('assignments.user')}>
+            <Select
+              allowClear
+              showSearch
+              options={userOptions}
+              placeholder={t('assignments.filters.user')}
+              loading={usersQuery.isLoading}
+              optionFilterProp="searchLabel"
+              style={{ width: 260 }}
+            />
+          </Form.Item>
+          <Form.Item name="workplaceId" label={t('assignments.workplace')}>
+            <Select
+              allowClear
+              showSearch
+              options={workplaceOptions}
+              placeholder={t('assignments.filters.workplace')}
+              loading={workplacesQuery.isLoading}
+              optionFilterProp="label"
+              style={{ width: 260 }}
+            />
+          </Form.Item>
+          <Form.Item name="status" label={t('assignments.status.title')}>
+            <Select
+              allowClear
+              options={statusOptions.map((value) => ({
+                value,
+                label:
+                  value === 'ACTIVE'
+                    ? t('assignments.status.active')
+                    : t('assignments.status.archived'),
+              }))}
+              style={{ width: 180 }}
+            />
+          </Form.Item>
+          <Form.Item name="range" label={t('assignments.filters.period')}>
+            <DatePicker.RangePicker showTime format="DD.MM.YYYY HH:mm" />
+          </Form.Item>
+        </Form>
+
+        {!showTrash && (
+          <Typography.Text
+            type="secondary"
+            style={{ whiteSpace: 'nowrap', marginBottom: 4 }}
+          >
+            Свободных сотрудников:{' '}
+            {usersQuery.isLoading || assignmentsAllActiveQuery.isLoading
+              ? '…'
+              : usersWithoutActiveAssignments.length}
+            {usersWithoutActiveAssignments.length > 0 &&
+              !usersQuery.isLoading &&
+              !assignmentsAllActiveQuery.isLoading && (
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => setIsFreeUsersModalOpen(true)}
+                  style={{ paddingLeft: 8 }}
+                >
+                  Показать
+                </Button>
+              )}
+          </Typography.Text>
+        )}
+      </div>
 
       <Table
         rowKey="id"
@@ -1653,17 +2289,65 @@ const AssignmentsPage = () => {
         }}
       />
 
-      {/* Модалка создания/редактирования назначения */}
+      {/* модалка со свободными сотрудниками */}
+      
+      <Modal
+        open={isAssignmentRequestsModalOpen}
+        onCancel={() => {
+          setCurrentAssignmentRequestIndex(0);
+          setIsAssignmentRequestsModalOpen(false);
+        }}
+        footer={null}
+        width={980}
+        title={t(
+          'assignments.assignmentRequestsTitle',
+          'Запросы на назначение',
+        )}
+      >
+                {renderAssignmentRequestsContent()}
+      </Modal>
+
+<Modal
+        open={isFreeUsersModalOpen}
+        title="Сотрудники без активных назначений"
+        onCancel={() => setIsFreeUsersModalOpen(false)}
+        footer={
+          <Button type="primary" onClick={() => setIsFreeUsersModalOpen(false)}>
+            Закрыть
+          </Button>
+        }
+      >
+        {usersQuery.isLoading || assignmentsAllActiveQuery.isLoading ? (
+          <Typography.Paragraph>Загрузка...</Typography.Paragraph>
+        ) : usersWithoutActiveAssignments.length === 0 ? (
+          <Typography.Paragraph>
+            Все сотрудники имеют хотя бы одно активное назначение.
+          </Typography.Paragraph>
+        ) : (
+          <ul style={{ paddingLeft: 20, marginBottom: 0 }}>
+            {usersWithoutActiveAssignments.map((u) => (
+              <li key={u.id}>
+                {u.fullName ?? u.email} {u.email ? `(${u.email})` : ''}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Modal>
+
+      {/* модалка создания/редактирования */}
       <Modal
         title={
-          editingAssignment
-            ? t('assignments.editTitle')
-            : t('assignments.createTitle')
+          approveRequest
+            ? t('assignments.approveRequestTitle', 'Одобрить запрос на назначение')
+            : editingAssignment
+              ? t('assignments.editTitle')
+              : t('assignments.createTitle')
         }
         open={isModalOpen}
         onCancel={() => {
           setIsModalOpen(false);
           setEditingAssignment(null);
+          setApproveRequest(null);
           form.resetFields();
           setShiftRows([]);
           setTimeRangeForAll(null);
@@ -1672,7 +2356,7 @@ const AssignmentsPage = () => {
         onOk={handleModalOk}
         okText={t('common.save')}
         cancelText={t('common.cancel')}
-        confirmLoading={createMutation.isPending || updateMutation.isPending}
+        confirmLoading={createMutation.isPending || updateMutation.isPending || approveAssignmentRequestMutation.isPending}
       >
         <Form form={form} layout="vertical">
           <Form.Item
@@ -1681,9 +2365,10 @@ const AssignmentsPage = () => {
             rules={[{ required: true, message: t('common.required') }]}
           >
             <Select
+              disabled={!!approveRequest}
               showSearch
               options={userOptions}
-              optionFilterProp="label"
+              optionFilterProp="searchLabel"
               placeholder={t('assignments.filters.user')}
               loading={usersQuery.isLoading}
             />
@@ -1707,6 +2392,7 @@ const AssignmentsPage = () => {
             initialValue="ACTIVE"
           >
             <Select
+              disabled={!!approveRequest}
               options={statusOptions.map((value) => ({
                 value,
                 label:
@@ -1723,8 +2409,9 @@ const AssignmentsPage = () => {
             rules={[{ required: true, message: t('common.required') }]}
           >
             <DatePicker.RangePicker
+              disabled={!!approveRequest}
               format="DD.MM.YYYY"
-              onChange={handleDateRangeChange}
+              onChange={approveRequest ? undefined : handleDateRangeChange}
             />
           </Form.Item>
 
@@ -1744,6 +2431,7 @@ const AssignmentsPage = () => {
                   }}
                 >
                   <TimePicker.RangePicker
+                    disabled={!!approveRequest}
                     format="HH:mm"
                     value={
                       timeRangeForAll &&
@@ -1753,6 +2441,7 @@ const AssignmentsPage = () => {
                         : null
                     }
                     onChange={(range) => {
+                      if (approveRequest) return;
                       if (!range) {
                         setTimeRangeForAll(null);
                         return;
@@ -1762,8 +2451,10 @@ const AssignmentsPage = () => {
                     }}
                   />
                   <Checkbox
+                    disabled={!!approveRequest}
                     checked={applyTimeToAll}
                     onChange={(e) => {
+                      if (approveRequest) return;
                       setApplyTimeToAll(e.target.checked);
                       if (e.target.checked && timeRangeForAll) {
                         applyTimeRangeToAllRows(timeRangeForAll, true);
@@ -1806,9 +2497,11 @@ const AssignmentsPage = () => {
                           <Button
                             size="small"
                             type="link"
-                            onClick={() =>
-                              addIntervalForDate(rowsForDate[0].date)
-                            }
+                            disabled={!!approveRequest}
+                            onClick={() => {
+                              if (approveRequest) return;
+                              addIntervalForDate(rowsForDate[0].date);
+                            }}
                           >
                             {t(
                               'assignments.addIntervalForDay',
@@ -1828,6 +2521,7 @@ const AssignmentsPage = () => {
                             }}
                           >
                             <TimePicker.RangePicker
+                              disabled={!!approveRequest}
                               format="HH:mm"
                               value={
                                 row.startTime && row.endTime
@@ -1835,6 +2529,7 @@ const AssignmentsPage = () => {
                                   : null
                               }
                               onChange={(range) => {
+                                if (approveRequest) return;
                                 setShiftRows((prev) =>
                                   sortShiftRows(
                                     prev.map((r) =>
@@ -1851,10 +2546,12 @@ const AssignmentsPage = () => {
                               }}
                             />
                             <Select
+                              disabled={!!approveRequest}
                               size="small"
                               style={{ minWidth: 160 }}
                               value={row.kind}
                               onChange={(value: ShiftKindType) => {
+                                if (approveRequest) return;
                                 setShiftRows((prev) =>
                                   prev.map((r) =>
                                     r.key === row.key
@@ -1894,7 +2591,7 @@ const AssignmentsPage = () => {
                                 },
                               ]}
                             />
-                            {shiftRows.length > 1 && (
+                            {shiftRows.length > 1 && !approveRequest && (
                               <Button
                                 size="small"
                                 type="link"
@@ -1916,7 +2613,7 @@ const AssignmentsPage = () => {
         </Form>
       </Modal>
 
-      {/* 🔔 Модалка запросов корректировок по назначению */}
+      {/* модалка запросов корректировок */}
       <Modal
         open={!!adjustmentsModalAssignment}
         width={900}

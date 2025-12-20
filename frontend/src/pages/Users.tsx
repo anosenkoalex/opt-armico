@@ -37,9 +37,6 @@ import { useAuth } from '../context/AuthContext.js';
 
 type UsersQueryResult = PaginatedResponse<User>;
 
-// Только обычные роли, системные (SUPER_ADMIN) в списке не показываем
-const roleOptions: UserRole[] = ['USER', 'MANAGER'];
-
 type AssignmentsApiResponse =
   | PaginatedResponse<Assignment>
   | {
@@ -48,6 +45,8 @@ type AssignmentsApiResponse =
       page: number;
       pageSize: number;
     };
+
+const roleOptions: UserRole[] = ['USER', 'MANAGER'];
 
 function formatHours(hours: number) {
   const rounded2 = Math.round(hours * 100) / 100;
@@ -100,7 +99,9 @@ const UsersPage = () => {
 
   // ====== MODAL: назначения по сотруднику ======
   const [assignmentsModalOpen, setAssignmentsModalOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<Pick<User, 'id' | 'email' | 'fullName'> | null>(null);
+  const [selectedUser, setSelectedUser] = useState<
+    Pick<User, 'id' | 'email' | 'fullName'> | null
+  >(null);
   const [assPage, setAssPage] = useState(1);
   const [assPageSize, setAssPageSize] = useState(10);
 
@@ -117,8 +118,6 @@ const UsersPage = () => {
     keepPreviousData: true,
   });
 
-  // Список сотрудников для отображения:
-  // скрываем всех SUPER_ADMIN (админ и dev)
   const visibleUsers = useMemo(
     () =>
       (usersQuery.data?.data ?? []).filter(
@@ -223,7 +222,6 @@ const UsersPage = () => {
         pageSize: assPageSize,
       })) as AssignmentsApiResponse;
 
-      // нормализация items -> data/meta
       if (!Array.isArray((raw as any).data) && Array.isArray((raw as any).items)) {
         const r = raw as any;
         return {
@@ -248,8 +246,27 @@ const UsersPage = () => {
         title: t('users.fullName'),
         dataIndex: 'fullName',
         key: 'fullName',
-        render: (value: string | null | undefined, record: User) =>
-          value || record.email || t('users.noName'),
+        render: (value: string | null | undefined, record: User) => {
+          const display = value || record.email || t('users.noName');
+          const hasActiveAssignments = Boolean(
+            (record as any).hasActiveAssignments,
+          );
+          const isUserRole = record.role === 'USER';
+          const noAssignments = isUserRole && !hasActiveAssignments;
+
+          return (
+            <span>
+              <Typography.Text type={noAssignments ? 'success' : undefined}>
+                {display}
+              </Typography.Text>
+              {noAssignments && (
+                <Tag color="green" style={{ marginLeft: 8 }}>
+                  {t('users.noAssignments', 'Нет назначений')}
+                </Tag>
+              )}
+            </span>
+          );
+        },
       },
       {
         title: t('users.email'),
@@ -376,21 +393,44 @@ const UsersPage = () => {
             (a, b) => dayjs(a.date).valueOf() - dayjs(b.date).valueOf(),
           );
 
-          const totalHours = sorted.reduce((sum, s) => sum + getShiftHours(s), 0);
+          const totalHours = sorted.reduce(
+            (sum, s) => sum + getShiftHours(s),
+            0,
+          );
 
           const content = (
             <div style={{ width: 540 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-                <Typography.Text strong>{t('assignments.shifts', 'Смены')}</Typography.Text>
-                <Typography.Text type="secondary" style={{ marginLeft: 12, whiteSpace: 'nowrap' }}>
-                  {sorted.length} {t('common.days', 'дн.')} · {formatHours(totalHours)}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  marginBottom: 10,
+                }}
+              >
+                <Typography.Text strong>
+                  {t('assignments.shifts', 'Смены')}
+                </Typography.Text>
+                <Typography.Text
+                  type="secondary"
+                  style={{ marginLeft: 12, whiteSpace: 'nowrap' }}
+                >
+                  {sorted.length} {t('common.days', 'дн.')} ·{' '}
+                  {formatHours(totalHours)}
                 </Typography.Text>
               </div>
 
-              <div style={{ maxHeight: 340, overflowY: 'auto', paddingRight: 16 }}>
+              <div
+                style={{
+                  maxHeight: 340,
+                  overflowY: 'auto',
+                  paddingRight: 16,
+                }}
+              >
                 {sorted.map((s: any) => {
                   const d = dayjs(s.date);
-                  const start = s.startsAt ? dayjs(s.startsAt).format('HH:mm') : '—';
+                  const start = s.startsAt
+                    ? dayjs(s.startsAt).format('HH:mm')
+                    : '—';
                   const end = s.endsAt ? dayjs(s.endsAt).format('HH:mm') : '—';
                   const h = getShiftHours(s);
 
@@ -406,9 +446,13 @@ const UsersPage = () => {
                       }}
                     >
                       <Typography.Text>
-                        {d.isValid() ? d.format('DD.MM.YYYY') : '—'} — {start}–{end}
+                        {d.isValid() ? d.format('DD.MM.YYYY') : '—'} — {start}–
+                        {end}
                       </Typography.Text>
-                      <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ whiteSpace: 'nowrap' }}
+                      >
                         {formatHours(h)}
                       </Typography.Text>
                     </div>
@@ -427,7 +471,8 @@ const UsersPage = () => {
               overlayStyle={{ maxWidth: 600 }}
             >
               <Typography.Text style={{ cursor: 'pointer' }}>
-                {sorted.length} {t('common.days', 'дн.')} / {formatHours(totalHours)}
+                {sorted.length} {t('common.days', 'дн.')} /{' '}
+                {formatHours(totalHours)}
               </Typography.Text>
             </Popover>
           );
@@ -451,7 +496,6 @@ const UsersPage = () => {
       const values = await form.validateFields();
 
       if (editingUser) {
-        // Редактирование пользователя — пароль не трогаем
         await updateMutation.mutateAsync({
           id: editingUser.id,
           values: {
@@ -462,27 +506,21 @@ const UsersPage = () => {
           },
         });
       } else {
-        // Создание пользователя
         const sendPasswordOnCreate = Boolean(values.sendPasswordOnCreate);
 
         const created = await createMutation.mutateAsync({
           fullName: values.fullName,
           email: values.email,
-          // если пароль пустой — не отправляем, бэкенд сам сгенерирует
           password: values.password || undefined,
           role: values.role,
           phone: values.phone,
         });
 
-        // Обновляем список
         void queryClient.invalidateQueries({ queryKey: ['users'] });
         message.success(t('users.created'));
 
-        // Если стоит галочка "Отправить пароль" — сразу шлём пароль
         if (sendPasswordOnCreate && created?.id) {
-          await sendPasswordMutation.mutateAsync(created.id).catch(() => {
-            // Ошибка уже обработана в sendPasswordMutation.onError
-          });
+          await sendPasswordMutation.mutateAsync(created.id).catch(() => {});
         }
 
         setIsModalOpen(false);
@@ -561,7 +599,11 @@ const UsersPage = () => {
             if (!target) return;
             if (target.closest('button') || target.closest('a')) return;
 
-            setSelectedUser({ id: record.id, email: record.email, fullName: record.fullName });
+            setSelectedUser({
+              id: record.id,
+              email: record.email,
+              fullName: record.fullName,
+            });
             setAssPage(1);
             setAssPageSize(10);
             setAssignmentsModalOpen(true);
@@ -580,7 +622,9 @@ const UsersPage = () => {
         onOk={handleModalOk}
         okText={t('common.save')}
         cancelText={t('common.cancel')}
-        confirmLoading={createMutation.isPending || updateMutation.isPending}
+        confirmLoading={
+          createMutation.isPending || updateMutation.isPending
+        }
       >
         <Form form={form} layout="vertical">
           <Form.Item label={t('users.fullName')} name="fullName">
@@ -613,7 +657,10 @@ const UsersPage = () => {
                 <Input.Password />
               </Form.Item>
 
-              <Form.Item name="sendPasswordOnCreate" valuePropName="checked">
+              <Form.Item
+                name="sendPasswordOnCreate"
+                valuePropName="checked"
+              >
                 <Checkbox>{t('users.sendPassword')}</Checkbox>
               </Form.Item>
             </>
@@ -638,11 +685,12 @@ const UsersPage = () => {
         </Form>
       </Modal>
 
-      {/* ====== MODAL: назначения сотрудника ====== */}
       <Modal
         title={
           selectedUser
-            ? `${t('users.fullName', 'Сотрудник')}: ${selectedUser.fullName ?? selectedUser.email}`
+            ? `${t('users.fullName', 'Сотрудник')}: ${
+                selectedUser.fullName ?? selectedUser.email
+              }`
             : t('users.fullName', 'Сотрудник')
         }
         open={assignmentsModalOpen}
@@ -662,7 +710,10 @@ const UsersPage = () => {
           <>
             <div style={{ marginBottom: 12 }}>
               <Typography.Text type="secondary">
-                {t('assignments.listForUser', 'Назначения сотрудника')}
+                {t(
+                  'assignments.listForUser',
+                  'Назначения сотрудника',
+                )}
               </Typography.Text>
             </div>
 
@@ -690,4 +741,3 @@ const UsersPage = () => {
 };
 
 export default UsersPage;
-//opt/armico/frontend/src/pages/Users.tsx

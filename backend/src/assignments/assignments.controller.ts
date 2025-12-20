@@ -8,6 +8,8 @@ import {
   Query,
   UseGuards,
   Delete,
+  Req,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { AssignmentsService } from './assignments.service.js';
 import {
@@ -22,7 +24,7 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
-import { UserRole } from '@prisma/client';
+import { AssignmentRequestStatus, UserRole } from '@prisma/client';
 import {
   ListAssignmentsDto,
   listAssignmentsSchema,
@@ -47,24 +49,17 @@ const requestScheduleAdjustmentSchema = z.object({
     .min(1, 'Дата обязательна')
     .refine(
       (val) =>
-        !Number.isNaN(Date.parse(val)) ||
-        /^\d{4}-\d{2}-\d{2}$/.test(val),
+        !Number.isNaN(Date.parse(val)) || /^\d{4}-\d{2}-\d{2}$/.test(val),
       'Некорректный формат даты',
     ),
   startsAt: z
     .string()
     .optional()
-    .refine(
-      (val) => !val || !Number.isNaN(Date.parse(val)),
-      'Некорректный формат времени начала',
-    ),
+    .refine((val) => !val || !Number.isNaN(Date.parse(val)), 'Некорректный формат времени начала'),
   endsAt: z
     .string()
     .optional()
-    .refine(
-      (val) => !val || !Number.isNaN(Date.parse(val)),
-      'Некорректный формат времени окончания',
-    ),
+    .refine((val) => !val || !Number.isNaN(Date.parse(val)), 'Некорректный формат времени окончания'),
   kind: z.enum(['DEFAULT', 'OFFICE', 'REMOTE', 'DAY_OFF']).optional(),
   comment: z.string().min(1, 'Комментарий обязателен').max(2000),
 });
@@ -99,10 +94,61 @@ export type ScheduleAdjustmentDecisionDto = z.infer<
   typeof scheduleAdjustmentDecisionSchema
 >;
 
+// ================================================================
+//        📨 БЛОК ЗАПРОСОВ НА НОВОЕ НАЗНАЧЕНИЕ (AssignmentRequest)
+// ================================================================
+
+const createAssignmentRequestSchema = z.object({
+  workplaceId: z.string().optional().nullable(),
+  dateFrom: z
+    .string()
+    .min(1, 'Дата начала обязательна')
+    .refine((val) => !Number.isNaN(Date.parse(val)), 'Некорректный dateFrom'),
+  dateTo: z
+    .string()
+    .min(1, 'Дата окончания обязательна')
+    .refine((val) => !Number.isNaN(Date.parse(val)), 'Некорректный dateTo'),
+  // structured slots (если фронт пришлёт), иначе можно оставить пустым/не прислать
+  slots: z.unknown().optional(),
+  comment: z.string().max(2000).optional().nullable(),
+});
+
+export type CreateAssignmentRequestDto = z.infer<
+  typeof createAssignmentRequestSchema
+>;
+
+const listAssignmentRequestsSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.nativeEnum(AssignmentRequestStatus).optional(),
+  requesterId: z.string().optional(),
+  workplaceId: z.string().optional(),
+});
+
+export type ListAssignmentRequestsDto = z.infer<
+  typeof listAssignmentRequestsSchema
+>;
+
+const assignmentRequestDecisionSchema = z.object({
+  decisionComment: z.string().max(2000).optional(),
+});
+
+export type AssignmentRequestDecisionDto = z.infer<
+  typeof assignmentRequestDecisionSchema
+>;
+
 @Controller('assignments')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class AssignmentsController {
   constructor(private readonly assignmentsService: AssignmentsService) {}
+
+  private getUserId(req: any): string | undefined {
+    return req?.user?.id ?? req?.user?.sub ?? req?.user?.userId;
+  }
+
+  private getOrgId(req: any): string | undefined {
+    return req?.user?.orgId ?? req?.user?.org?.id;
+  }
 
   @Post()
   @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
@@ -137,6 +183,130 @@ export class AssignmentsController {
     return this.assignmentsService.findAllInTrash(query);
   }
 
+  /**
+   * 📊 Краткая статистика по сотрудникам:
+   *  - все USER (не system)
+   *  - количество активных назначений на каждого
+   */
+  @Get('users-summary')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  getUsersAssignmentsSummary() {
+    return this.assignmentsService.getUsersAssignmentsSummary();
+  }
+
+  // ================================================================
+  //        📨 БЛОК ЗАПРОСОВ НА НОВОЕ НАЗНАЧЕНИЕ (AssignmentRequest)
+  // ================================================================
+
+  /**
+   * 📝 Пользователь создаёт запрос на назначение.
+   *
+   * POST /assignments/requests
+   * (и алиас) POST /assignments/request
+   */
+  @Post('requests')
+  @Roles(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  createAssignmentRequest(
+    @Req() req: any,
+    @Body(new ZodValidationPipe(createAssignmentRequestSchema))
+    payload: CreateAssignmentRequestDto,
+  ) {
+    const userId = this.getUserId(req);
+    if (!userId) {
+      throw new UnauthorizedException();
+    }
+
+    return this.assignmentsService.createAssignmentRequest(
+      userId,
+      payload,
+      this.getOrgId(req),
+    );
+  }
+
+  // алиас под старый клиент (если там был /assignments/request)
+  @Post('request')
+  @Roles(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  createAssignmentRequestAlias(
+    @Req() req: any,
+    @Body(new ZodValidationPipe(createAssignmentRequestSchema))
+    payload: CreateAssignmentRequestDto,
+  ) {
+    return this.createAssignmentRequest(req, payload);
+  }
+
+  /**
+   * 📋 Список запросов на назначение (для админа/менеджера)
+   *
+   * GET /assignments/requests
+   */
+  @Get('requests')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER, UserRole.USER)
+  listAssignmentRequests(
+    @Req() req: any,
+    @Query(new ZodValidationPipe(listAssignmentRequestsSchema))
+    query: ListAssignmentRequestsDto,
+  ) {
+    const currentUserId = this.getUserId(req);
+    const currentOrgId = this.getOrgId(req);
+    const currentRole: UserRole | undefined = req?.user?.role;
+
+    // Если это обычный сотрудник (USER), то он имеет право видеть
+    // только собственные запросы. Принудительно подменяем requesterId
+    // на его id, игнорируя любые параметры в query.
+    const safeQuery: ListAssignmentRequestsDto =
+      currentRole === UserRole.USER && currentUserId
+        ? { ...query, requesterId: currentUserId }
+        : query;
+
+    return this.assignmentsService.listAssignmentRequests(
+      safeQuery,
+      currentOrgId,
+      currentUserId,
+    );
+  }
+
+  /**
+   * ✅ Одобрить запрос
+   *
+   * POST /assignments/requests/:requestId/approve
+   */
+  @Post('requests/:requestId/approve')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  approveAssignmentRequest(
+    @Req() req: any,
+    @Param('requestId') requestId: string,
+    @Body(new ZodValidationPipe(assignmentRequestDecisionSchema))
+    payload: AssignmentRequestDecisionDto,
+  ) {
+    return this.assignmentsService.decideAssignmentRequest(
+      requestId,
+      'APPROVED',
+      payload,
+      this.getUserId(req),
+    );
+  }
+
+  /**
+   * ❌ Отклонить запрос
+   *
+   * POST /assignments/requests/:requestId/reject
+   */
+  @Post('requests/:requestId/reject')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  rejectAssignmentRequest(
+    @Req() req: any,
+    @Param('requestId') requestId: string,
+    @Body(new ZodValidationPipe(assignmentRequestDecisionSchema))
+    payload: AssignmentRequestDecisionDto,
+  ) {
+    return this.assignmentsService.decideAssignmentRequest(
+      requestId,
+      'REJECTED',
+      payload,
+      this.getUserId(req),
+    );
+  }
+
   // ================================================================
   //        🔔 БЛОК ЗАПРОСОВ НА КОРРЕКТИРОВКУ РАСПИСАНИЯ
   // ================================================================
@@ -164,9 +334,6 @@ export class AssignmentsController {
    * с фильтрами по статусу / сотруднику / назначению.
    *
    * GET /assignments/adjustments
-   *
-   * ВАЖНО: этот маршрут должен идти ДО @Get(':id'),
-   * иначе /assignments/adjustments будет обрабатываться как :id.
    */
   @Get('adjustments')
   @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)

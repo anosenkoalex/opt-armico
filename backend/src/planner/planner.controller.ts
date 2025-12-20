@@ -1,3 +1,4 @@
+// src/planner/planner.controller.ts
 import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
 import { PlannerService } from './planner.service.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
@@ -56,7 +57,8 @@ export class PlannerController {
   constructor(private readonly plannerService: PlannerService) {}
 
   @Get('matrix')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  // 👇 ДОБАВИЛИ UserRole.USER, чтобы сотрудники тоже могли смотреть матрицу
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER, UserRole.USER)
   getMatrix(
     @CurrentUser() user: JwtPayload,
     @Query(new ZodValidationPipe(plannerMatrixSchema)) query: PlannerMatrixDto,
@@ -65,7 +67,8 @@ export class PlannerController {
   }
 
   @Get('export')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER)
+  // 👇 Если не хочешь давать эксел обычным юзерам — убери отсюда USER
+  @Roles(UserRole.SUPER_ADMIN, UserRole.MANAGER, UserRole.USER)
   async export(
     @CurrentUser() user: JwtPayload,
     @Query(new ZodValidationPipe(plannerExportSchema)) query: PlannerExportDto,
