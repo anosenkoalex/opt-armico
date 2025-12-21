@@ -943,14 +943,45 @@ export class AssignmentsService {
       return { deletedCount: 0 };
     }
 
-    const result = await this.prisma.assignment.deleteMany({
-      where: {
-        id: { in: ids },
-        deletedAt: { not: null },
-      },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const assignments = await tx.assignment.findMany({
+        where: {
+          id: { in: ids },
+          deletedAt: { not: null },
+        },
+        select: { id: true },
+      });
 
-    return { deletedCount: result.count };
+      if (!assignments.length) {
+        return { deletedCount: 0 };
+      }
+
+      const assignmentIds = assignments.map((a) => a.id);
+
+      // сначала удаляем все запросы на корректировку расписания
+      await tx.assignmentAdjustment.deleteMany({
+        where: {
+          assignmentId: { in: assignmentIds },
+        },
+      });
+
+      // затем удаляем смены, привязанные к этим назначениям
+      await tx.assignmentShift.deleteMany({
+        where: {
+          assignmentId: { in: assignmentIds },
+        },
+      });
+
+      // и только после этого удаляем сами назначения
+      const result = await tx.assignment.deleteMany({
+        where: {
+          id: { in: assignmentIds },
+          deletedAt: { not: null },
+        },
+      });
+
+      return { deletedCount: result.count };
+    });
   }
 
   /**
@@ -996,9 +1027,26 @@ export class AssignmentsService {
         return [];
       }
 
+      const assignmentIds = items.map((a) => a.id);
+
+      // сначала удаляем все запросы на корректировку расписания
+      await tx.assignmentAdjustment.deleteMany({
+        where: {
+          assignmentId: { in: assignmentIds },
+        },
+      });
+
+      // затем удаляем смены, привязанные к этим назначениям
+      await tx.assignmentShift.deleteMany({
+        where: {
+          assignmentId: { in: assignmentIds },
+        },
+      });
+
+      // и только после этого удаляем сами назначения
       await tx.assignment.deleteMany({
         where: {
-          id: { in: items.map((a) => a.id) },
+          id: { in: assignmentIds },
           deletedAt: { not: null },
         },
       });

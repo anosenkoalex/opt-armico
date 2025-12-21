@@ -12,6 +12,7 @@ import StatisticsPage from '../pages/Statistics.js';
 import AssignmentAdjustmentsPage from '../pages/AssignmentAdjustments.js';
 import AppLayout from '../components/Layout.js';
 import { useAuth } from '../context/AuthContext.js';
+import InstructionsPage from '../pages/Instructions.js'; // <-- страница инструкции
 
 const ProtectedRoute = () => {
   const { token } = useAuth();
@@ -30,6 +31,12 @@ const AppRoutes = () => {
   const defaultPath = user?.role === 'USER' ? '/my-place' : '/dashboard';
 
   const element = useRoutes([
+    // 🔹 Страница инструкции — ОТДЕЛЬНО, без AppLayout и без проверки токена
+    {
+      path: '/instructions',
+      element: <InstructionsPage />,
+    },
+
     {
       path: '/login',
       // если уже залогинен — отправляем по роли
@@ -42,7 +49,7 @@ const AppRoutes = () => {
         // корневой маршрут → редирект по роли
         { index: true, element: <Navigate to={defaultPath} replace /> },
 
-        // общий дашборд (для админов/менеджеров, но технически доступен всем с токеном)
+        // общий дашборд
         { path: 'dashboard', element: <Dashboard /> },
 
         // страница сотрудника
@@ -56,10 +63,10 @@ const AppRoutes = () => {
         { path: 'users/create', element: <UsersCreatePage /> },
         { path: 'statistics', element: <StatisticsPage /> },
 
-        // страница запросов корректировок по назначениям
+        // страница запросов корректировок
         { path: 'schedule-adjustments', element: <AssignmentAdjustmentsPage /> },
 
-        // dev-панель (защита по роли уже внутри Layout/страниц)
+        // dev-панель
         { path: 'dev', element: <DevPage /> },
       ],
     },

@@ -329,17 +329,71 @@ export class UsersService implements OnModuleInit {
 
   async remove(id: string) {
     await this.findOne(id);
-    await this.prisma.notification.deleteMany({ where: { userId: id } });
-    await this.prisma.assignment.deleteMany({ where: { userId: id } });
 
-    const deleted = await this.prisma.user.delete({
-      where: { id },
-      select: this.baseSelect(),
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      // 1) удаляем все уведомления пользователя
+      await tx.notification.deleteMany({
+        where: { userId: id },
+      });
+
+      // 2) удаляем все отчёты по рабочим часам, привязанные к пользователю
+      await tx.workReport.deleteMany({
+        where: { userId: id },
+      });
+
+      // 3) удаляем все запросы на назначение, где пользователь был инициатором
+      await tx.assignmentRequest.deleteMany({
+        where: {
+          requesterId: id,
+        },
+      });
+
+      // 4) находим все назначения этого пользователя
+      const assignments = await tx.assignment.findMany({
+        where: { userId: id },
+        select: { id: true },
+      });
+
+      const assignmentIds = assignments.map((a) => a.id);
+
+      if (assignmentIds.length) {
+        // 5) сначала удаляем все запросы на корректировку расписания по этим назначениям
+        await tx.assignmentAdjustment.deleteMany({
+          where: {
+            assignmentId: {
+              in: assignmentIds,
+            },
+          },
+        });
+
+        // 6) затем удаляем смены, привязанные к этим назначениям
+        await tx.assignmentShift.deleteMany({
+          where: {
+            assignmentId: {
+              in: assignmentIds,
+            },
+          },
+        });
+
+        // 7) и только после этого удаляем сами назначения
+        await tx.assignment.deleteMany({
+          where: {
+            id: {
+              in: assignmentIds,
+            },
+          },
+        });
+      }
+
+      // 8) в конце удаляем самого пользователя
+      return tx.user.delete({
+        where: { id },
+        select: this.baseSelect(),
+      });
     });
 
     return this.presentUser(deleted);
   }
-
   private baseSelect() {
     return {
       id: true,

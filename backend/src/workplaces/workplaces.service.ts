@@ -143,15 +143,52 @@ export class WorkplacesService {
       );
     }
 
-    // 2) Архивные (и любые остальные) назначения просто удаляем вместе с рабочим местом
-    await this.prisma.assignment.deleteMany({
-      where: {
-        workplaceId: id,
-      },
-    });
+    // 2) Удаляем все назначения по рабочему месту и само рабочее место в одной транзакции
+    await this.prisma.$transaction(async (tx) => {
+      const assignments = await tx.assignment.findMany({
+        where: {
+          workplaceId: id,
+        },
+        select: {
+          id: true,
+        },
+      });
 
-    await this.prisma.workplace.delete({
-      where: { id },
+      const assignmentIds = assignments.map((a) => a.id);
+
+      if (assignmentIds.length) {
+        // сначала удаляем все запросы на корректировку расписания по этим назначениям
+        await tx.assignmentAdjustment.deleteMany({
+          where: {
+            assignmentId: {
+              in: assignmentIds,
+            },
+          },
+        });
+
+        // затем удаляем смены, привязанные к этим назначениям
+        await tx.assignmentShift.deleteMany({
+          where: {
+            assignmentId: {
+              in: assignmentIds,
+            },
+          },
+        });
+
+        // и только после этого удаляем сами назначения
+        await tx.assignment.deleteMany({
+          where: {
+            id: {
+              in: assignmentIds,
+            },
+          },
+        });
+      }
+
+      // после очистки зависимостей удаляем рабочее место
+      await tx.workplace.delete({
+        where: { id },
+      });
     });
 
     return { success: true };
