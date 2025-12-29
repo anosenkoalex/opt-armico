@@ -27,8 +27,10 @@ import dayjs from 'dayjs';
 const createWorkReportSchema = z.object({
   date: z.string().min(1, 'Дата обязательна'),        // YYYY-MM-DD
   hours: z
-    .coerce.number()                                  // <-- главное изменение: приводим строку к number
+    .coerce.number()                                  // приводим строку/число к number
     .min(0, 'Часы не могут быть отрицательными'),
+  workplaceId: z.string().min(1, 'Рабочее место обязательно').optional().nullable(),
+  comment: z.string().max(1000).optional().nullable(),
 });
 type CreateWorkReportDto = z.infer<typeof createWorkReportSchema>;
 
@@ -163,6 +165,8 @@ export class MeController {
           userId: user.sub,
           date: dateStart,
           hours: body.hours,
+          workplaceId: body.workplaceId ?? null,
+          comment: body.comment ?? null,
         },
       });
     });

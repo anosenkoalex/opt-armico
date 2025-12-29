@@ -205,6 +205,9 @@ const MyPlacePage = () => {
     Record<string, CorrectionInterval[]>
   >({});
 
+  const [correctionTargetWorkplaceId, setCorrectionTargetWorkplaceId] =
+    useState<string | null>(null);
+
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [passwordForm] = Form.useForm();
   const [changePasswordError, setChangePasswordError] =
@@ -237,6 +240,8 @@ const MyPlacePage = () => {
     useState<Dayjs | null>(dayjs());
   const [workReportHoursByDate, setWorkReportHoursByDate] =
     useState<Record<string, number | null>>({});
+  const [workReportIntervalsByDate, setWorkReportIntervalsByDate] =
+    useState<Record<string, { workplaceId: string | null; hours: number | null }[]>>({});
 
   // состояние для личной статистики пользователя
   const [myStatsFrom, setMyStatsFrom] = useState<Dayjs>(
@@ -294,6 +299,49 @@ const MyPlacePage = () => {
     return set;
   }, [mySchedule]);
 
+  // Плановые часы по графику для каждой даты
+  const plannedHoursByDate = useMemo(() => {
+    const result: Record<string, number> = {};
+
+    // 1) по слотам (микро-график пользователя)
+    if (mySchedule?.slots?.length) {
+      mySchedule.slots.forEach((slot: any) => {
+        const from = dayjs(slot.from);
+        const to = dayjs(slot.to ?? slot.from);
+        if (!from.isValid() || !to.isValid() || !to.isAfter(from)) return;
+
+        const dateKey = from.format('YYYY-MM-DD');
+        const hours = to.diff(from, 'hour', true);
+        result[dateKey] = (result[dateKey] ?? 0) + hours;
+      });
+    }
+
+    // 2) по сменам назначений (если они есть в ответе)
+    if (mySchedule?.assignments?.length) {
+      mySchedule.assignments.forEach((assignment: any) => {
+        const shifts: any[] = assignment.shifts ?? [];
+        shifts.forEach((shift) => {
+          const from = dayjs(shift.startsAt ?? shift.date);
+          const to = dayjs(shift.endsAt ?? shift.startsAt ?? shift.date);
+          if (!from.isValid() || !to.isValid() || !to.isAfter(from)) return;
+
+          const dateKey = dayjs(shift.date ?? from).format('YYYY-MM-DD');
+          const hours = to.diff(from, 'hour', true);
+          result[dateKey] = (result[dateKey] ?? 0) + hours;
+        });
+      });
+    }
+
+    return result;
+  }, [mySchedule]);
+
+  // Плановые часы для выбранной в модалке даты
+  const plannedHoursForSelectedDate = useMemo(() => {
+    if (!workReportSelectedDate) return null;
+    const dateKey = workReportSelectedDate.format('YYYY-MM-DD');
+    const val = plannedHoursByDate[dateKey];
+    return val != null ? val : null;
+  }, [workReportSelectedDate, plannedHoursByDate]);
 
   // Загрузка отчётов по отработанным часам для текущего пользователя
   const loadWorkReportsForDate = async (baseDate: Dayjs) => {
@@ -312,12 +360,51 @@ const MyPlacePage = () => {
       });
 
       const map: Record<string, number | null> = {};
+      const intervalsMap: Record<string, { workplaceId: string | null; hours: number | null }[]> =
+        {};
+
       for (const report of reports) {
         if (!report.date) continue;
-        map[report.date] = (map[report.date] ?? 0) + report.hours;
+        const dateKey = report.date;
+        map[dateKey] = (map[dateKey] ?? 0) + report.hours;
+
+        let intervals: { workplaceId: string | null; hours: number | null }[] | null = null;
+        const rawComment = (report.comment ?? '').trim();
+
+        if (rawComment.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(rawComment) as any;
+            if (parsed && Array.isArray(parsed.intervals)) {
+              intervals = parsed.intervals.map((it: any) => ({
+                workplaceId:
+                  typeof it.workplaceId === 'string' ? it.workplaceId : report.workplaceId ?? null,
+                hours:
+                  typeof it.hours === 'number'
+                    ? it.hours
+                    : Number.isFinite(Number(it.hours))
+                    ? Number(it.hours)
+                    : null,
+              }));
+            }
+          } catch {
+            // ignore parse errors, fallback to single interval
+          }
+        }
+
+        if (!intervals) {
+          intervals = [
+            {
+              workplaceId: report.workplaceId ?? null,
+              hours: report.hours,
+            },
+          ];
+        }
+
+        intervalsMap[dateKey] = intervals;
       }
 
       setWorkReportHoursByDate(map);
+      setWorkReportIntervalsByDate(intervalsMap);
     } catch (error: any) {
       console.error('Failed to load work reports', error);
 
@@ -392,7 +479,7 @@ const MyPlacePage = () => {
     isLoading: isAllWorkplacesLoading,
   } = useQuery<PaginatedResponse<Workplace>>({
     queryKey: ['my-place', 'workplaces', { search: workplaceSearch }],
-    enabled: !!user && isRequestModalOpen,
+    enabled: !!user && (isRequestModalOpen || isWorkReportModalOpen || correctionModalOpen),
     queryFn: () =>
       fetchWorkplaces({
         search: workplaceSearch || undefined,
@@ -876,7 +963,29 @@ const MyPlacePage = () => {
       return `${dateStr}: ${startStr} → ${endStr} (${kindLabel})`;
     });
 
-    const finalComment = 'Интервалы, которые сотрудник предлагает:\n' + lines.join('\n');
+    const headerLines: string[] = [];
+
+    const rawWp: any = (correctionAssignment as any)?.workplace;
+    if (rawWp && rawWp.name) {
+      const currentLabel = rawWp.code ? `${rawWp.code} — ${rawWp.name}` : rawWp.name;
+      headerLines.push(`Текущее рабочее место: ${currentLabel}`);
+    }
+
+    if (correctionTargetWorkplaceId) {
+      const desiredOption = workplaceOptions.find((o) => o.value === correctionTargetWorkplaceId);
+      if (desiredOption?.label) {
+        headerLines.push(`Желаемое рабочее место: ${desiredOption.label}`);
+      }
+    }
+
+    if (headerLines.length > 0) {
+      headerLines.push('');
+    }
+
+    const finalComment =
+      headerLines.join('\n') +
+      'Интервалы, которые сотрудник предлагает:\n' +
+      lines.join('\n');
 
     try {
       setIsCorrectionSubmitting(true);
@@ -898,6 +1007,7 @@ const MyPlacePage = () => {
       setCorrectionModalOpen(false);
       setCorrectionIntervals({});
       setCorrectionAssignment(null);
+      setCorrectionTargetWorkplaceId(null);
     } catch (error: any) {
       const msg =
         error?.response?.data?.message ||
@@ -912,23 +1022,19 @@ const MyPlacePage = () => {
   const handleAddCorrectionDay = () => {
     if (!correctionAssignment) return;
 
-    const [intervalFrom, intervalTo] = getAssignmentInterval(correctionAssignment);
-    if (!intervalFrom || !intervalTo) return;
+    const existingKeys = Object.keys(correctionIntervals);
 
-    const dateFrom = intervalFrom.startOf('day');
-    const dateTo = intervalTo.startOf('day');
+    let dayToAdd: Dayjs;
 
-    let dayToAdd = dateFrom.startOf('day');
-    const existingDates = new Set(Object.keys(correctionIntervals));
-
-    while (existingDates.has(dayToAdd.format('YYYY-MM-DD'))) {
-      dayToAdd = dayToAdd.add(1, 'day');
-      if (dayToAdd.isAfter(dateTo, 'day')) {
-        message.warning(
-          t('myPlace.allDaysAdded', 'Все дни в интервале назначения уже добавлены'),
-        );
-        return;
-      }
+    if (!existingKeys.length) {
+      const [intervalFrom, intervalTo] = getAssignmentInterval(correctionAssignment);
+      const base = intervalFrom ?? intervalTo ?? dayjs();
+      dayToAdd = base.startOf('day');
+    } else {
+      const maxExisting = existingKeys
+        .map((key) => dayjs(key, 'YYYY-MM-DD'))
+        .reduce((max, current) => (current.isAfter(max, 'day') ? current : max));
+      dayToAdd = maxExisting.add(1, 'day').startOf('day');
     }
 
     const defaultFrom = dayToAdd.hour(9).minute(0);
@@ -1437,7 +1543,10 @@ const rebuildRequestIntervalsFromPeriod = (
       setIsWorkReportSubmitting(true);
 
       const dateValue = values.date as Dayjs | null;
-      const hoursValue = values.hours;
+      const intervalsRaw = (values.intervals ?? []) as {
+        workplaceId?: string | null;
+        hours?: number | null;
+      }[];
 
       if (!dateValue) {
         message.error(
@@ -1446,28 +1555,95 @@ const rebuildRequestIntervalsFromPeriod = (
         return;
       }
 
-      const hours = Number(hoursValue);
-      if (!Number.isFinite(hours) || hours < 0) {
+      if (!intervalsRaw.length) {
         message.error(
           t(
             'myPlace.workReport.hoursRequired',
-            'Укажите корректное количество часов',
+            'Добавьте хотя бы один интервал и укажите часы',
           ),
         );
         return;
       }
 
+      const intervals = intervalsRaw
+        .map((it) => ({
+          workplaceId: it.workplaceId ?? null,
+          hours:
+            typeof it.hours === 'number'
+              ? it.hours
+              : Number.isFinite(Number(it.hours))
+              ? Number(it.hours)
+              : null,
+        }))
+        .filter((it) => it.workplaceId && it.hours !== null);
+
+      if (!intervals.length) {
+        message.error(
+          t(
+            'myPlace.workReport.hoursRequired',
+            'Добавьте хотя бы один интервал с корректными часами',
+          ),
+        );
+        return;
+      }
+
+      // Валидация: часы неотрицательные
+      for (const it of intervals) {
+        if (!it.workplaceId) {
+          message.error(
+            t('myPlace.workReport.workplaceRequired', 'Выберите рабочее место'),
+          );
+          return;
+        }
+        if (it.hours == null || it.hours < 0) {
+          message.error(
+            t(
+              'myPlace.workReport.hoursRequired',
+              'Укажите корректное количество часов',
+            ),
+          );
+          return;
+        }
+      }
+
+      const totalHours = intervals.reduce((sum, it) => sum + (it.hours ?? 0), 0);
+      if (totalHours <= 0) {
+        message.error(
+          t(
+            'myPlace.workReport.hoursRequired',
+            'Укажите положительное количество часов',
+          ),
+        );
+        return;
+      }
+
+      const mainWorkplaceId = intervals[0]?.workplaceId as string;
+
       const dateKey = dateValue.format('YYYY-MM-DD');
 
-      // TODO: backend должен реализовать POST /me/work-reports
       await createMyWorkReport({
         date: dateKey,
-        hours,
+        hours: totalHours,
+        workplaceId: mainWorkplaceId,
+        comment: JSON.stringify({
+          intervals: intervals.map((it) => ({
+            workplaceId: it.workplaceId,
+            hours: it.hours,
+          })),
+        }),
       });
 
       setWorkReportHoursByDate((prev) => ({
         ...prev,
-        [dateKey]: hours,
+        [dateKey]: totalHours,
+      }));
+
+      setWorkReportIntervalsByDate((prev) => ({
+        ...prev,
+        [dateKey]: intervals.map((it) => ({
+          workplaceId: it.workplaceId ?? null,
+          hours: it.hours ?? null,
+        })),
       }));
 
       message.success(
@@ -1486,8 +1662,8 @@ const rebuildRequestIntervalsFromPeriod = (
       );
     } finally {
       setIsWorkReportSubmitting(false);
-    }
-  };
+    }  };
+
 
   // ====== РЕНДЕР ======
 
@@ -1523,13 +1699,15 @@ const rebuildRequestIntervalsFromPeriod = (
           </Button>
         }
       >
-        {myWorkplace ? (
+        {myWorkplace || hasAssignments ? (
           <>
-            <Descriptions bordered size="small" column={1} labelStyle={{ width: 200 }}>
-              <Descriptions.Item label={t('myPlace.currentWorkplace', 'Текущее рабочее место')}>
-                {myWorkplace.code ? `${myWorkplace.code} — ${myWorkplace.name}` : myWorkplace.name}
-              </Descriptions.Item>
-            </Descriptions>
+            {myWorkplace && (
+              <Descriptions bordered size="small" column={1} labelStyle={{ width: 200 }}>
+                <Descriptions.Item label={t('myPlace.currentWorkplace', 'Текущее рабочее место')}>
+                  {myWorkplace.code ? `${myWorkplace.code} — ${myWorkplace.name}` : myWorkplace.name}
+                </Descriptions.Item>
+              </Descriptions>
+            )}
 
             {hasAssignments ? (
               <Table<AssignmentWithStats>
@@ -1846,16 +2024,32 @@ const rebuildRequestIntervalsFromPeriod = (
             <Space wrap>
               <Button
                 onClick={() => {
-                  // при открытии модалки по умолчанию ставим сегодняшнюю дату
-                  const todayValue = dayjs();
-                  const dateKey = todayValue.format('YYYY-MM-DD');
-                  const savedHours = workReportHoursByDate[dateKey] ?? undefined;
+                  const initialDate = dayjs();
+                  const dateKey = initialDate.format('YYYY-MM-DD');
+                  const totalHours = workReportHoursByDate[dateKey] ?? null;
+
+                  const currentWorkplaceId =
+                    workReportForm.getFieldValue(['intervals', 0, 'workplaceId']) ??
+                    myWorkplace?.id ??
+                    workplaceOptions?.[0]?.value ??
+                    null;
+
+                  const existingIntervals =
+                    workReportIntervalsByDate[dateKey] ??
+                    (currentWorkplaceId
+                      ? [
+                          {
+                            workplaceId: currentWorkplaceId,
+                            hours: totalHours,
+                          },
+                        ]
+                      : []);
 
                   workReportForm.setFieldsValue({
-                    date: todayValue,
-                    hours: savedHours,
+                    date: initialDate,
+                    intervals: existingIntervals,
                   });
-                  setWorkReportSelectedDate(todayValue);
+                  setWorkReportSelectedDate(initialDate);
                   setIsWorkReportModalOpen(true);
                 }}
               >
@@ -2374,12 +2568,30 @@ const rebuildRequestIntervalsFromPeriod = (
               fullscreen={false}
               value={workReportSelectedDate ?? dayjs()}
               onSelect={(value) => {
-                setWorkReportSelectedDate(value);
                 const dateKey = value.format('YYYY-MM-DD');
-                const hours = workReportHoursByDate[dateKey] ?? null;
+                const totalHours = workReportHoursByDate[dateKey] ?? null;
+
+                const currentWorkplaceId =
+                  workReportForm.getFieldValue(['intervals', 0, 'workplaceId']) ??
+                  myWorkplace?.id ??
+                  workplaceOptions?.[0]?.value ??
+                  null;
+
+                const existingIntervals =
+                  workReportIntervalsByDate[dateKey] ??
+                  (currentWorkplaceId
+                    ? [
+                        {
+                          workplaceId: currentWorkplaceId,
+                          hours: totalHours,
+                        },
+                      ]
+                    : []);
+
+                setWorkReportSelectedDate(value);
                 workReportForm.setFieldsValue({
                   date: value,
-                  hours,
+                  intervals: existingIntervals,
                 });
               }}
               dateFullCellRender={(value) => {
@@ -2388,7 +2600,10 @@ const rebuildRequestIntervalsFromPeriod = (
                 const isSelected =
                   !!workReportSelectedDate &&
                   value.isSame(workReportSelectedDate, 'day');
-                const hours = workReportHoursByDate[dateKey] ?? null;
+
+                const planned = plannedHoursByDate[dateKey];
+                const reported = workReportHoursByDate[dateKey] ?? null;
+
                 return (
                   <div
                     style={{
@@ -2400,6 +2615,7 @@ const rebuildRequestIntervalsFromPeriod = (
                         ? '1px solid #52c41a'
                         : '1px solid transparent',
                       backgroundColor: isSelected ? '#e6f4ff' : undefined,
+                      opacity: hasAssignments ? 1 : 0.4,
                     }}
                   >
                     <div>{value.date()}</div>
@@ -2411,46 +2627,178 @@ const rebuildRequestIntervalsFromPeriod = (
                         )}
                       </div>
                     )}
-                    {hours != null && (
+                    {planned != null && (
                       <div style={{ fontSize: 10 }}>
-                        {hours} ч
+                        {t(
+                          'myPlace.workReport.plannedHoursShort',
+                          'План: {{hours}} ч',
+                          { hours: planned.toFixed(1) },
+                        )}
+                      </div>
+                    )}
+                    {reported != null && (
+                      <div style={{ fontSize: 10 }}>
+                        {t(
+                          'myPlace.workReport.reportedHoursShort',
+                          'Отчёт: {{hours}} ч',
+                          { hours: reported },
+                        )}
                       </div>
                     )}
                   </div>
                 );
-              }}
-            />
+              }}            />
           </div>
 
-          <Form.Item
-            label={t('myPlace.workReport.hours', 'Отработано часов')}
-            name="hours"
-            rules={[
-              {
-                required: true,
-                message: t(
-                  'myPlace.workReport.hoursRequired',
-                  'Укажите количество часов',
-                ),
-              },
-            ]}
-          >
-            <InputNumber
-              min={0}
-              max={24}
-              step={0.5}
-              style={{ width: '100%' }}
-              disabled={isWorkReportSubmitting}
-              placeholder={t(
-                'myPlace.workReport.hoursPlaceholder',
-                'Например, 8',
-              )}
-              onBlur={() => {
-                const values = workReportForm.getFieldsValue();
-                void handleSubmitWorkReport(values);
-              }}
-            />
-          </Form.Item>
+          {workReportSelectedDate && (
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary">
+                {t(
+                  'myPlace.workReport.plannedHoursLabel',
+                  'По графику на выбранную дату:',
+                )}{' '}
+              </Text>
+              <Text strong>
+                {plannedHoursForSelectedDate != null
+                  ? `${plannedHoursForSelectedDate.toFixed(1)} ${t(
+                      'myPlace.hoursShort',
+                      'ч',
+                    )}`
+                  : t(
+                      'myPlace.workReport.noPlannedHoursLabel',
+                      'На эту дату в графике нет запланированных часов.',
+                    )}
+              </Text>
+            </div>
+          )}
+          <Form.List name="intervals">
+          {(fields, { add, remove }) => (
+            <>
+              {fields.map((field, index) => (
+                <Flex key={field.key} gap={8} align="flex-end" style={{ marginBottom: 8 }}>
+                  <Form.Item
+                    {...field}
+                    label={
+                      index === 0
+                        ? t('myPlace.workReport.workplace', 'Рабочее место')
+                        : undefined
+                    }
+                    name={[field.name, 'workplaceId']}
+                    fieldKey={[field.fieldKey, 'workplaceId']}
+                    style={{ flex: 1 }}
+                    rules={[
+                      {
+                        required: true,
+                        message: t(
+                          'myPlace.workReport.workplaceRequired',
+                          'Выберите рабочее место',
+                        ),
+                      },
+                    ]}
+                  >
+                    <Select
+                      showSearch
+                      optionFilterProp="label"
+                      placeholder={t(
+                        'myPlace.workReport.workplacePlaceholder',
+                        'Выберите рабочее место',
+                      )}
+                      disabled={isWorkReportSubmitting}
+                      options={workplaceOptions}
+                      filterOption={(input, option) =>
+                        (option?.label as string)
+                          .toLowerCase()
+                          .includes(input.toLowerCase())
+                      }
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    {...field}
+                    label={
+                      index === 0
+                        ? t('myPlace.workReport.hours', 'Отработанные часы')
+                        : undefined
+                    }
+                    name={[field.name, 'hours']}
+                    fieldKey={[field.fieldKey, 'hours']}
+                    style={{ width: 170 }}
+                    rules={[
+                      {
+                        required: true,
+                        message: t(
+                          'myPlace.workReport.hoursRequired',
+                          'Укажите количество часов',
+                        ),
+                      },
+                    ]}
+                  >
+                    <InputNumber
+                      min={0}
+                      max={24}
+                      step={0.5}
+                      style={{ width: '100%' }}
+                      disabled={isWorkReportSubmitting}
+                      placeholder={t(
+                        'myPlace.workReport.hoursPlaceholder',
+                        'Например, 8',
+                      )}
+                    />
+                  </Form.Item>
+
+                  {fields.length > 1 && (
+                    <Button
+                      type="link"
+                      danger
+                      onClick={() => remove(field.name)}
+                    >
+                      {t('myPlace.workReport.removeInterval', 'Удалить')}
+                    </Button>
+                  )}
+                </Flex>
+              ))}
+
+              <Button
+                type="dashed"
+                onClick={() =>
+                  add({
+                    workplaceId:
+                      workReportForm.getFieldValue(['intervals', 0, 'workplaceId']) ??
+                      myWorkplace?.id ??
+                      workplaceOptions?.[0]?.value ??
+                      null,
+                    hours: null,
+                  })
+                }
+                block
+                disabled={isWorkReportSubmitting}
+              >
+                {t('myPlace.workReport.addInterval', 'Добавить интервал')}
+              </Button>
+
+              <Flex justify="end" gap={8} style={{ marginTop: 16 }}>
+                <Button
+                  onClick={() => {
+                    setIsWorkReportModalOpen(false);
+                  }}
+                  disabled={isWorkReportSubmitting}
+                >
+                  {t('myPlace.workReport.cancel', 'Отмена')}
+                </Button>
+                <Button
+                  type="primary"
+                  loading={isWorkReportSubmitting}
+                  onClick={() => {
+                    const values = workReportForm.getFieldsValue();
+                    void handleSubmitWorkReport(values);
+                  }}
+                >
+                  {t('myPlace.workReport.save', 'Сохранить')}
+                </Button>
+              </Flex>
+            </>
+          )}
+        </Form.List>
         </Form>
       </Modal>
 
@@ -2507,6 +2855,7 @@ const rebuildRequestIntervalsFromPeriod = (
           setCorrectionModalOpen(false);
           setCorrectionIntervals({});
           setCorrectionAssignment(null);
+          setCorrectionTargetWorkplaceId(null);
         }}
         onOk={handleSendCorrection}
         okButtonProps={{
@@ -2523,6 +2872,34 @@ const rebuildRequestIntervalsFromPeriod = (
                 (correctionAssignment as any).workplaceId ??
                 '—'}
             </Text>
+
+            <div style={{ marginTop: 12 }}>
+              <Text strong>
+                {t(
+                  'myPlace.desiredWorkplaceLabel',
+                  'Желаемое рабочее место (необязательно)',
+                )}
+              </Text>
+              <div style={{ marginTop: 8, maxWidth: 480 }}>
+                <Select
+                  showSearch
+                  allowClear
+                  placeholder={t(
+                    'myPlace.desiredWorkplacePlaceholder',
+                    'Выберите рабочее место',
+                  )}
+                  value={correctionTargetWorkplaceId ?? undefined}
+                  onChange={(value) => setCorrectionTargetWorkplaceId(value ?? null)}
+                  onSearch={(value) => setWorkplaceSearch(value || '')}
+                  filterOption={false}
+                  loading={isAllWorkplacesLoading}
+                  notFoundContent={isAllWorkplacesLoading ? <Spin size="small" /> : null}
+                  options={workplaceOptions}
+                  dropdownMatchSelectWidth={false}
+                  dropdownStyle={{ minWidth: 480, whiteSpace: 'normal' }}
+                />
+              </div>
+            </div>
 
             <div style={{ marginTop: 16, marginBottom: 16 }}>
               <Button type="dashed" onClick={handleAddCorrectionDay}>

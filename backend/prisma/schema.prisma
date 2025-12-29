@@ -122,6 +122,8 @@ model Workplace {
   assignments Assignment[]
   assignmentRequests AssignmentRequest[]
 
+  workReports WorkReport[]
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -317,9 +319,18 @@ model WorkReport {
   userId String
   user   User    @relation(fields: [userId], references: [id])
 
+  /// Рабочее место, к которому относится отчёт
+  workplaceId String?
+  workplace   Workplace? @relation(fields: [workplaceId], references: [id])
+
   /// Дата дня (хранится как DateTime, мы в контроллере приводим к началу дня)
   date  DateTime
+
+  /// Количество отработанных часов за день
   hours Float
+
+  /// Необязательный комментарий сотрудника
+  comment   String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -594,10 +594,22 @@ const assignmentsWithAdjustment = useMemo(() => {
   });
 
   const approveAdjustmentMutation = useMutation({
-    mutationFn: (payload: { id: string; managerComment?: string }) =>
-      approveScheduleAdjustment(payload.id, {
-        managerComment: payload.managerComment,
-      }),
+    mutationFn: async (payload: {
+      id: string;
+      managerComment?: string;
+      assignmentId?: string;
+      newWorkplaceId?: string | null;
+    }) => {
+      const { id, managerComment, assignmentId, newWorkplaceId } = payload;
+
+      if (assignmentId && newWorkplaceId) {
+        await updateAssignment(assignmentId, { workplaceId: newWorkplaceId } as any);
+      }
+
+      return approveScheduleAdjustment(id, {
+        managerComment,
+      });
+    },
     onSuccess: () => {
       queryInvalidateAll();
       message.success(
@@ -1954,6 +1966,20 @@ if (editingAssignment) {
     return result;
   };
 
+  const parseDesiredWorkplaceLabelFromComment = (
+    comment?: string | null,
+  ): string | null => {
+    if (!comment) return null;
+    const prefix = 'Желаемое рабочее место:';
+    const line = comment
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.startsWith(prefix));
+    if (!line) return null;
+    const label = line.slice(prefix.length).trim();
+    return label || null;
+  };
+
   // 🔧 ОБНОВЛЁННЫЙ БЛОК: собираем интервалы из всех запросов по этому назначению
   const proposedShiftsByDate = useMemo(() => {
     const merged: Record<string, ProposedShift[]> = {};
@@ -2060,6 +2086,31 @@ if (editingAssignment) {
 
     return result;
   }, [datesForComparison, originalShiftsByDate, proposedShiftsByDate]);
+
+  const desiredWorkplaceLabelForModal = useMemo(() => {
+    for (const adj of adjustmentsForModal) {
+      const label = parseDesiredWorkplaceLabelFromComment(adj.comment);
+      if (label) {
+        return label;
+      }
+    }
+    return null;
+  }, [adjustmentsForModal]);
+
+  const desiredWorkplaceOptionForModal = useMemo(
+    () =>
+      desiredWorkplaceLabelForModal
+        ? workplaceOptions.find((o) => o.label === desiredWorkplaceLabelForModal) ?? null
+        : null,
+    [desiredWorkplaceLabelForModal, workplaceOptions],
+  );
+
+  const currentWorkplaceLabelForModal = useMemo(() => {
+    const wp: any = (adjustmentsModalAssignment as any)?.workplace;
+    if (!wp || !wp.name) return null;
+    return wp.code ? `${wp.code} — ${wp.name}` : wp.name;
+  }, [adjustmentsModalAssignment]);
+
 
   const hasChangesSummary = changesSummaryByDate.length > 0;
 
@@ -2646,6 +2697,45 @@ if (editingAssignment) {
               </>
             )}
 
+            {(currentWorkplaceLabelForModal || desiredWorkplaceLabelForModal) && (
+              <>
+                <Typography.Title
+                  level={5}
+                  style={{ marginTop: 0, marginBottom: 8 }}
+                >
+                  {t(
+                    'assignments.adjustments.workplaceTitle',
+                    'Рабочее место',
+                  )}
+                </Typography.Title>
+                <Typography.Paragraph style={{ marginBottom: 8 }}>
+                  {currentWorkplaceLabelForModal && (
+                    <div>
+                      <Typography.Text type="secondary">
+                        {t(
+                          'assignments.adjustments.currentWorkplace',
+                          'Текущее:',
+                        )}
+                      </Typography.Text>{' '}
+                      {currentWorkplaceLabelForModal}
+                    </div>
+                  )}
+                  {desiredWorkplaceLabelForModal && (
+                    <div>
+                      <Typography.Text type="secondary">
+                        {t(
+                          'assignments.adjustments.desiredWorkplace',
+                          'Запросил перевод на:',
+                        )}
+                      </Typography.Text>{' '}
+                      {desiredWorkplaceLabelForModal}
+                    </div>
+                  )}
+                </Typography.Paragraph>
+                <Divider />
+              </>
+            )}
+
             <Card
               size="small"
               style={{ marginBottom: 16 }}
@@ -2775,9 +2865,13 @@ if (editingAssignment) {
                 type="primary"
                 loading={approveAdjustmentMutation.isPending}
                 onClick={() => {
+                  const newWorkplaceId = desiredWorkplaceOptionForModal?.value ?? null;
+
                   const payloads = adjustmentsForModal.map((adj) => ({
                     id: adj.id,
                     managerComment: undefined as string | undefined,
+                    assignmentId: adj.assignmentId,
+                    newWorkplaceId,
                   }));
 
                   (async () => {
